@@ -5,6 +5,7 @@ package a2a
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -58,7 +59,31 @@ func decodeA2ASettings(bc *config.Channel) (*A2ASettings, error) {
 			return nil, fmt.Errorf("a2a: decode settings: %w", err)
 		}
 	}
+	// v1.4.2.1 exposed these four fields through PICOCLAW_CHANNELS_A2A_* env
+	// vars. The channel decodes its settings locally, so apply them here to
+	// keep existing deployments working.
+	applyA2AEnvOverrides(settings)
 	return settings, nil
+}
+
+// applyA2AEnvOverrides keeps the environment-variable contract of the old
+// in-tree A2ASettings (env wins over the config file, as before).
+func applyA2AEnvOverrides(settings *A2ASettings) {
+	if settings == nil {
+		return
+	}
+	if v := strings.TrimSpace(os.Getenv("PICOCLAW_CHANNELS_A2A_BASE_URL")); v != "" {
+		settings.BaseURL = v
+	}
+	if v := strings.TrimSpace(os.Getenv("PICOCLAW_CHANNELS_A2A_AGENT_SLUG")); v != "" {
+		settings.AgentSlug = v
+	}
+	if v := strings.TrimSpace(os.Getenv("PICOCLAW_CHANNELS_A2A_TOKEN")); v != "" {
+		settings.Token = v
+	}
+	if v := strings.TrimSpace(os.Getenv("PICOCLAW_CHANNELS_A2A_KEY_FILE")); v != "" {
+		settings.KeyFile = v
+	}
 }
 
 func (c *A2ASettings) RequireSignEnabled() bool {

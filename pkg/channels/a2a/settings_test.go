@@ -68,3 +68,24 @@ func TestDecodeA2ASettingsOverrides(t *testing.T) {
 		t.Fatalf("notify chars = %d", settings.GetNotifyMaxChars())
 	}
 }
+
+func TestDecodeA2ASettingsEnvOverrides(t *testing.T) {
+	t.Setenv("PICOCLAW_CHANNELS_A2A_BASE_URL", "http://127.0.0.1:21220")
+	t.Setenv("PICOCLAW_CHANNELS_A2A_AGENT_SLUG", "env-alice")
+	t.Setenv("PICOCLAW_CHANNELS_A2A_TOKEN", "env-token")
+	t.Setenv("PICOCLAW_CHANNELS_A2A_KEY_FILE", "/tmp/env.seed")
+
+	bc := &config.Channel{
+		Enabled:  true,
+		Type:     channelTypeA2A,
+		Settings: config.RawNode(`{"base_url":"https://file.example","agent_slug":"file-alice","token":"file-token"}`),
+	}
+	settings, err := decodeA2ASettings(bc)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if settings.BaseURL != "http://127.0.0.1:21220" || settings.AgentSlug != "env-alice" ||
+		settings.Token != "env-token" || settings.KeyFile != "/tmp/env.seed" {
+		t.Fatalf("env overrides not applied: %+v", settings)
+	}
+}

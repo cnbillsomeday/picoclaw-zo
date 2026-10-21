@@ -201,9 +201,30 @@ func findEnabledA2AChannel(cfg *config.Config) (string, *config.Channel, *a2aToo
 				return "", nil, nil, fmt.Errorf("decode a2a settings: %w", err)
 			}
 		}
+		applyA2AToolEnvOverrides(settings)
 		return name, bc, settings, nil
 	}
 	return "", nil, nil, errors.New("no enabled a2a channel configured")
+}
+
+// applyA2AToolEnvOverrides mirrors the channel's env fallback so the tool and
+// the channel resolve the same endpoint/identity.
+func applyA2AToolEnvOverrides(settings *a2aToolSettings) {
+	if settings == nil {
+		return
+	}
+	if v := strings.TrimSpace(os.Getenv("PICOCLAW_CHANNELS_A2A_BASE_URL")); v != "" {
+		settings.BaseURL = v
+	}
+	if v := strings.TrimSpace(os.Getenv("PICOCLAW_CHANNELS_A2A_AGENT_SLUG")); v != "" {
+		settings.AgentSlug = v
+	}
+	if v := strings.TrimSpace(os.Getenv("PICOCLAW_CHANNELS_A2A_TOKEN")); v != "" {
+		settings.Token = v
+	}
+	if v := strings.TrimSpace(os.Getenv("PICOCLAW_CHANNELS_A2A_KEY_FILE")); v != "" {
+		settings.KeyFile = v
+	}
 }
 
 // lookupProactiveSender finds the live channel that owns the configured A2A

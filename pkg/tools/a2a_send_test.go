@@ -57,3 +57,16 @@ func TestFindEnabledA2AChannelDecodesSettings(t *testing.T) {
 		t.Fatal("dave must not be allowed")
 	}
 }
+
+func TestFindEnabledA2AChannelEnvOverrides(t *testing.T) {
+	t.Setenv("PICOCLAW_CHANNELS_A2A_BASE_URL", "http://127.0.0.1:21220")
+	t.Setenv("PICOCLAW_CHANNELS_A2A_TOKEN", "env-token")
+	cfg := a2aTestConfig(`{"agent_slug":"alice"}`, []string{"bob"})
+	_, _, settings, err := findEnabledA2AChannel(cfg)
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if settings.BaseURL != "http://127.0.0.1:21220" || settings.Token != "env-token" {
+		t.Fatalf("env overrides not applied: %+v", settings)
+	}
+}

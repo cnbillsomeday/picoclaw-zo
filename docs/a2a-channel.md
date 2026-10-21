@@ -39,6 +39,15 @@ channels:
 
 `dry_run: true` 只轮询与记录，不投递、不标记已读、不回复，适合上线前验证连通性。
 
+兼容 v1.4.2.1 的部署习惯：以下环境变量仍会**覆盖**配置文件里的同名字段（env 优先）：
+
+```
+PICOCLAW_CHANNELS_A2A_BASE_URL
+PICOCLAW_CHANNELS_A2A_AGENT_SLUG
+PICOCLAW_CHANNELS_A2A_TOKEN
+PICOCLAW_CHANNELS_A2A_KEY_FILE
+```
+
 ## 2. 运行机制
 
 ```
