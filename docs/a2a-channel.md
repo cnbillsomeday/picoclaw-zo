@@ -135,7 +135,13 @@ go test  -tags goolm,stdjson ./pkg/channels/a2a/ ./pkg/tools/ ./pkg/commands/
 ## 7. 测试
 
 ```bash
+# 单元测试
 go test -tags goolm,stdjson ./pkg/channels/a2a/ ./pkg/tools/ ./pkg/commands/
+
+# 端到端冒烟（起真实内嵌服务端 + 真实签名 HTTP + 合成 turn.end 事件；
+# 不需要 LLM，验证投递/结算/清未读这条链路）
+go test -tags 'integration,goolm,stdjson' ./pkg/channels/a2a/ -run TestIntegration -v
 ```
 
-覆盖：配置解析、事件用量聚合、turn.end 结算 pending、payload 反射读取、`a2a_send` 配置发现与 allow_from 校验。
+覆盖：配置解析、事件用量聚合、turn.end 结算 pending、payload 反射读取、`a2a_send` 配置发现与 allow_from 校验；
+以及 server ↔ channel 的完整 HTTP 链路（签名、轮询、投递、事件结算、未读清零）。
