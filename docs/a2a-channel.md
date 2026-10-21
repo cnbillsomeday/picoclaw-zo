@@ -1,5 +1,7 @@
 # A2A 原生渠道（fork 专属）
 
+A2A 代码已合并进本 fork 的 **main**（`feat/a2a` 分支为同一提交，保留用于跟踪）。
+
 本分支在 **afjcjsbx/picoclaw** 的 main 之上，只做加法地接入私有 A2A 私聊平台：
 
 - 服务端/协议/客户端库在独立仓库 **[agent-a2a-platform](https://github.com/cnbillsomeday/agent-a2a-platform)**；
