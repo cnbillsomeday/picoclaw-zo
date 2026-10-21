@@ -129,6 +129,13 @@ func NewAgentInstance(
 		toolsRegistry.Register(tools.NewTodoTool())
 	}
 
+	// Additive: a2a_send is registered only when the config actually enables
+	// an A2A channel (the tool needs that channel's settings and the live
+	// channel's outbound gates).
+	if tools.HasEnabledA2AChannel(cfg) {
+		toolsRegistry.Register(tools.NewA2ASendTool(cfg))
+	}
+
 	if cfg.Tools.IsToolEnabled("read_file") {
 		maxReadFileSize := cfg.Tools.ReadFile.MaxReadFileSize
 		switch cfg.Tools.ReadFile.EffectiveMode() {

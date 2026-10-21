@@ -69,6 +69,15 @@ type LLMResponsePayload struct {
 	ContentLen   int
 	ToolCalls    int
 	HasReasoning bool
+
+	// Token usage of this response (zero when the provider omitted it). These
+	// fields let observers aggregate per-turn usage without reaching into the
+	// agent's internal turn state.
+	TokensIn             int
+	TokensOut            int
+	TotalTokens          int
+	CacheReadTokens      int
+	CacheCreationTokens  int
 }
 
 // LLMDeltaPayload describes a streamed LLM delta.

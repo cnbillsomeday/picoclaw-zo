@@ -1,0 +1,32 @@
+diff --git a/pkg/agent/instance.go b/pkg/agent/instance.go
+index 4c13bb45..88fe5e5d 100644
+--- a/pkg/agent/instance.go
++++ b/pkg/agent/instance.go
+@@ -129,6 +129,13 @@ func NewAgentInstance(
+ 		toolsRegistry.Register(tools.NewTodoTool())
+ 	}
+ 
++	// Additive: a2a_send is registered only when the config actually enables
++	// an A2A channel (the tool needs that channel's settings and the live
++	// channel's outbound gates).
++	if tools.HasEnabledA2AChannel(cfg) {
++		toolsRegistry.Register(tools.NewA2ASendTool(cfg))
++	}
++
+ 	if cfg.Tools.IsToolEnabled("read_file") {
+ 		maxReadFileSize := cfg.Tools.ReadFile.MaxReadFileSize
+ 		switch cfg.Tools.ReadFile.EffectiveMode() {
+diff --git a/pkg/commands/cmd_clear.go b/pkg/commands/cmd_clear.go
+index f0951eb3..e58fdf0b 100644
+--- a/pkg/commands/cmd_clear.go
++++ b/pkg/commands/cmd_clear.go
+@@ -6,7 +6,8 @@ func clearCommand() Definition {
+ 	return Definition{
+ 		Name:        "clear",
+ 		Description: "Clear the chat history",
+-		Usage:       "/clear",
++		Usage:       "/clear (alias: /new)",
++		Aliases:     []string{"new"},
+ 		Handler: func(_ context.Context, req Request, rt *Runtime) error {
+ 			if rt == nil || rt.ClearHistory == nil {
+ 				return req.Reply(unavailableMsg)

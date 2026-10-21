@@ -1,0 +1,52 @@
+diff --git a/pkg/agent/event_payloads.go b/pkg/agent/event_payloads.go
+index 2e1d0812..2ff5af83 100644
+--- a/pkg/agent/event_payloads.go
++++ b/pkg/agent/event_payloads.go
+@@ -69,6 +69,15 @@ type LLMResponsePayload struct {
+ 	ContentLen   int
+ 	ToolCalls    int
+ 	HasReasoning bool
++
++	// Token usage of this response (zero when the provider omitted it). These
++	// fields let observers aggregate per-turn usage without reaching into the
++	// agent's internal turn state.
++	TokensIn             int
++	TokensOut            int
++	TotalTokens          int
++	CacheReadTokens      int
++	CacheCreationTokens  int
+ }
+ 
+ // LLMDeltaPayload describes a streamed LLM delta.
+diff --git a/pkg/agent/pipeline_llm.go b/pkg/agent/pipeline_llm.go
+index afc30fe3..4770b3e6 100644
+--- a/pkg/agent/pipeline_llm.go
++++ b/pkg/agent/pipeline_llm.go
+@@ -608,14 +608,22 @@ func (p *Pipeline) CallLLM(
+ 			al.targetReasoningChannelID(ts.channel),
+ 		)
+ 	}
++	responsePayload := LLMResponsePayload{
++		ContentLen:   len(exec.response.Content),
++		ToolCalls:    len(exec.response.ToolCalls),
++		HasReasoning: exec.response.Reasoning != "" || exec.response.ReasoningContent != "",
++	}
++	if exec.response.Usage != nil {
++		responsePayload.TokensIn = exec.response.Usage.PromptTokens
++		responsePayload.TokensOut = exec.response.Usage.CompletionTokens
++		responsePayload.TotalTokens = exec.response.Usage.TotalTokens
++		responsePayload.CacheReadTokens = exec.response.Usage.CacheReadTokens
++		responsePayload.CacheCreationTokens = exec.response.Usage.CacheCreationTokens
++	}
+ 	al.emitEvent(
+ 		runtimeevents.KindAgentLLMResponse,
+ 		ts.eventMeta("runTurn", "turn.llm.response"),
+-		LLMResponsePayload{
+-			ContentLen:   len(exec.response.Content),
+-			ToolCalls:    len(exec.response.ToolCalls),
+-			HasReasoning: exec.response.Reasoning != "" || exec.response.ReasoningContent != "",
+-		},
++		responsePayload,
+ 	)
+ 
+ 	llmResponseFields := map[string]any{

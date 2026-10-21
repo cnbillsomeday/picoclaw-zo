@@ -1,0 +1,18 @@
+diff --git a/pkg/channels/manager.go b/pkg/channels/manager.go
+index 16b88ad2..b5304369 100644
+--- a/pkg/channels/manager.go
++++ b/pkg/channels/manager.go
+@@ -1004,6 +1004,13 @@ func (m *Manager) initChannel(typeName, channelName string) {
+ 			"error":   err.Error(),
+ 		})
+ 	} else {
++		// Inject the runtime event bus into channels that opt in (additive hook;
++		// the A2A channel uses it for wake summaries and turn settlement).
++		if m.runtimeEvents != nil {
++			if setter, ok := ch.(interface{ SetRuntimeEvents(runtimeevents.Bus) }); ok {
++				setter.SetRuntimeEvents(m.runtimeEvents)
++			}
++		}
+ 		// Inject MediaStore if channel supports it
+ 		if m.mediaStore != nil {
+ 			if setter, ok := ch.(mediaStoreSetter); ok {
