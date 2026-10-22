@@ -951,6 +951,50 @@ func TestHandleAddModel_PersistsProvider(t *testing.T) {
 	}
 }
 
+func TestHandleAddModel_PersistsSessionHeader(t *testing.T) {
+	configPath, cleanup := setupOAuthTestEnv(t)
+	defer cleanup()
+
+	h := NewHandler(configPath)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/models", bytes.NewBufferString(`{
+		"model_name":"opencode-relay",
+		"model":"openai/mimo-v2.6-flash",
+		"api_base":"https://relay.example/v1",
+		"api_key":"relay-key",
+		"session_header":"x-opencode-session"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	added := cfg.ModelList[len(cfg.ModelList)-1]
+	if added.SessionHeader != "x-opencode-session" {
+		t.Fatalf("session_header = %q, want %q", added.SessionHeader, "x-opencode-session")
+	}
+
+	// The list endpoint must return the field so the edit form can round-trip it.
+	listRec := httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodGet, "/api/models", nil)
+	mux.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want %d, body=%s", listRec.Code, http.StatusOK, listRec.Body.String())
+	}
+	if !bytes.Contains(listRec.Body.Bytes(), []byte(`"session_header":"x-opencode-session"`)) {
+		t.Fatalf("list response missing session_header: %s", listRec.Body.String())
+	}
+}
+
 func TestHandleAddModel_TrimsModelName(t *testing.T) {
 	configPath, cleanup := setupOAuthTestEnv(t)
 	defer cleanup()
