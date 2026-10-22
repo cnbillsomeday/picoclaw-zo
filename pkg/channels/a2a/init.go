@@ -15,6 +15,7 @@ import (
 const channelTypeA2A = "a2a"
 
 func init() {
+	config.RegisterChannelSettings(channelTypeA2A, A2ASettings{})
 	channels.RegisterFactory(
 		channelTypeA2A,
 		func(channelName, channelType string, cfg *config.Config, b *bus.MessageBus) (channels.Channel, error) {

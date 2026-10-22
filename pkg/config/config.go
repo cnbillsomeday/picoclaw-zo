@@ -520,6 +520,13 @@ type RoutingConfig struct {
 	Enabled    bool    `json:"enabled"`
 	LightModel string  `json:"light_model"` // model_name from model_list to use for simple tasks
 	Threshold  float64 `json:"threshold"`   // complexity score in [0,1]; score >= threshold → primary model
+
+	// The following fields are present in PicoClaw v1.4.2.1 configs. They are
+	// accepted and preserved for compatibility; routing escalation and the
+	// repeat breaker are not implemented by this fork.
+	EscalatePromptTokens    int `json:"escalate_prompt_tokens,omitempty"`
+	EscalateToolIterations  int `json:"escalate_tool_iterations,omitempty"`
+	RepeatBreakerIterations int `json:"repeat_breaker_iterations,omitempty"`
 }
 
 // SubTurnConfig configures the SubTurn execution system.
@@ -1028,6 +1035,11 @@ type ModelConfig struct {
 	// UserAgent is the user agent string to use for HTTP requests.
 	UserAgent string `json:"user_agent,omitempty" yaml:"-"`
 
+	// SessionHeader is the per-session request header name used by PicoClaw
+	// v1.4.2.1 configs. Providers that support session routing receive it
+	// through SetSessionHeader during provider construction.
+	SessionHeader string `json:"session_header,omitempty" yaml:"-"`
+
 	// isVirtual marks this model as a virtual model generated from multi-key expansion.
 	// Virtual models should not be persisted to config files.
 	isVirtual bool
@@ -1071,6 +1083,9 @@ func (c *ModelConfig) Validate() error {
 	// Reject consecutive slashes
 	if strings.Contains(c.Model, "//") {
 		return fmt.Errorf("model identifier must not contain //")
+	}
+	if c.SessionHeader != "" && strings.ContainsAny(c.SessionHeader, " \t\r\n") {
+		return fmt.Errorf("session_header must not contain whitespace")
 	}
 	return nil
 }

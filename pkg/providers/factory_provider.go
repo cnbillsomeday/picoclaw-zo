@@ -390,6 +390,15 @@ func finalizeProviderFromConfig(
 	modelID string,
 	cfg *config.ModelConfig,
 ) (LLMProvider, string, error) {
+	// PicoClaw v1.4.2.1 exposes session_header on every model entry. Providers
+	// that support the generic session-key header implement this setter.
+	if cfg != nil && strings.TrimSpace(cfg.SessionHeader) != "" {
+		if setter, ok := provider.(interface {
+			SetSessionHeader(name, fallback string)
+		}); ok {
+			setter.SetSessionHeader(cfg.SessionHeader, "")
+		}
+	}
 	wrapped, err := wrapProviderWithToolSchemaTransform(provider, cfg.ToolSchemaTransform)
 	if err != nil {
 		return nil, "", err
