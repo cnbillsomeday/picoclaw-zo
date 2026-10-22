@@ -396,7 +396,14 @@ func finalizeProviderFromConfig(
 		if setter, ok := provider.(interface {
 			SetSessionHeader(name, fallback string)
 		}); ok {
-			setter.SetSessionHeader(cfg.SessionHeader, "")
+			// Background calls (summaries, subagents, ...) have no session_key.
+			// They still need a stable value, otherwise OpenCode-compatible
+			// relays reject the request with MissingSessionID.
+			fallback := "picoclaw-" + strings.TrimSpace(cfg.ModelName)
+			if fallback == "picoclaw-" {
+				fallback = "picoclaw"
+			}
+			setter.SetSessionHeader(cfg.SessionHeader, fallback)
 		}
 	}
 	wrapped, err := wrapProviderWithToolSchemaTransform(provider, cfg.ToolSchemaTransform)
