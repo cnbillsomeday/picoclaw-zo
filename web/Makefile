@@ -34,18 +34,22 @@ ifeq ($(OS),Windows_NT)
 endif
 
 # Version
+# picoclaw-zo tracks upstream releases: scripts/zo-version.sh prints
+# "<upstream-base>+zo.<commits-since-base>", e.g. v0.5.1+zo.78.
 ifeq ($(OS),Windows_NT)
+	ZO_VERSION_RAW:=$(strip $(shell sh ../scripts/zo-version.sh 2>NUL))
 	VERSION_RAW:=$(strip $(shell git describe --tags --always --dirty 2>NUL))
 	GIT_COMMIT_RAW:=$(strip $(shell git rev-parse --short=8 HEAD 2>NUL))
 	BUILD_TIME_RAW:=$(strip $(shell powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK'"))
 	GO_VERSION_RAW:=$(strip $(shell go env GOVERSION 2>NUL))
 else
+	ZO_VERSION_RAW:=$(strip $(shell sh ../scripts/zo-version.sh 2>/dev/null))
 	VERSION_RAW:=$(strip $(shell git describe --tags --always --dirty 2>/dev/null))
 	GIT_COMMIT_RAW:=$(strip $(shell git rev-parse --short=8 HEAD 2>/dev/null))
 	BUILD_TIME_RAW:=$(strip $(shell date +%FT%T%z))
 	GO_VERSION_RAW:=$(strip $(shell go env GOVERSION 2>/dev/null))
 endif
-VERSION?=$(if $(VERSION_RAW),$(VERSION_RAW),dev)
+VERSION?=$(if $(ZO_VERSION_RAW),$(ZO_VERSION_RAW),$(if $(VERSION_RAW),$(VERSION_RAW),dev))
 GIT_COMMIT=$(if $(GIT_COMMIT_RAW),$(GIT_COMMIT_RAW),dev)
 BUILD_TIME=$(if $(BUILD_TIME_RAW),$(BUILD_TIME_RAW),dev)
 GO_VERSION=$(if $(GO_VERSION_RAW),$(GO_VERSION_RAW),unknown)

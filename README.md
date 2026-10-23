@@ -4,9 +4,13 @@
   <img src="assets/logo.webp" alt="PicoClaw" width="200">
 </p>
 
-<h1>PicoClaw: An Ultra-Lightweight Go AI Agent for RISC-V, SBCs, and Embedded Systems — Actively Maintained Fork</h1>
+<h1>PicoClaw ZO (picoclaw-zo): An Ultra-Lightweight Go AI Agent for RISC-V, SBCs, and Embedded Systems — Actively Maintained Fork</h1>
 
 > PicoClaw is small on purpose. Small is not lesser. Small is enough.
+>
+> **picoclaw-zo** is this fork's project name. Versioning tracks upstream releases
+> (`v0.5.1+zo.N`), while the Go module path, binary names, config directory, and
+> service names stay compatible with upstream PicoClaw.
 
 <h3>$10 Hardware · 10–20 MB RAM · ms Boot · Let's Go, PicoClaw!</h3>
 

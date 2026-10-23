@@ -1,6 +1,6 @@
 [Desktop Entry]
-Name=PicoClaw Launcher
-Comment=Web-based configuration and management UI for PicoClaw
+Name=PicoClaw ZO Launcher
+Comment=Web-based configuration and management UI for PicoClaw ZO
 Exec=picoclaw-launcher
 Icon=picoclaw-launcher
 Terminal=true
