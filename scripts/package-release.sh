@@ -75,7 +75,20 @@ tar.gz)
 	tar -C "$stage" -czf "$out" picoclaw picoclaw-launcher BUILD-INFO.txt
 	;;
 zip)
-	( cd "$stage" && zip -q -X "$out" picoclaw.exe picoclaw-launcher.exe BUILD-INFO.txt )
+	if command -v zip >/dev/null 2>&1; then
+		( cd "$stage" && zip -q -X "$out" picoclaw.exe picoclaw-launcher.exe BUILD-INFO.txt )
+	else
+		python3 - "$stage" "$out" <<'PY'
+import os
+import sys
+import zipfile
+
+stage, out = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for name in ("picoclaw.exe", "picoclaw-launcher.exe", "BUILD-INFO.txt"):
+        z.write(os.path.join(stage, name), arcname=name)
+PY
+	fi
 	;;
 esac
 
