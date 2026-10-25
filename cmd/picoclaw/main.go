@@ -151,6 +151,17 @@ picoclaw --no-color status`,
 	return cmd
 }
 
+// stdioProtocolMode 判断这次调用是否在用 stdout 跑协议（目前只有 `fish hook`）。
+// 这类命令的 stdout 必须是纯 JSON-RPC，任何横幅/提示都会把宿主的第一帧读坏。
+func stdioProtocolMode(args []string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "fish" && args[i+1] == "hook" {
+			return true
+		}
+	}
+	return false
+}
+
 const (
 	colorBlue = "\033[1;38;2;62;93;185m"
 	colorRed  = "\033[1;38;2;213;70;70m"
@@ -181,22 +192,34 @@ func main() {
 
 	cliui.Init(earlyColorDisabled())
 
-	if earlyColorDisabled() {
-		fmt.Print(plainBanner)
-	} else {
-		fmt.Printf("%s", banner)
+	// `picoclaw fish hook` 走 JSON-RPC over stdio，stdout 只能是协议本身：
+	// 横幅和时区提示会把宿主的第一帧读坏，必须在这里就让路。
+	stdio := stdioProtocolMode(os.Args[1:])
+
+	if !stdio {
+		if earlyColorDisabled() {
+			fmt.Print(plainBanner)
+		} else {
+			fmt.Printf("%s", banner)
+		}
 	}
 
 	tzEnv := os.Getenv("TZ")
 	if tzEnv != "" {
-		fmt.Println("TZ environment:", tzEnv)
-		zoneinfoEnv := os.Getenv("ZONEINFO")
-		fmt.Println("ZONEINFO environment:", zoneinfoEnv)
+		if !stdio {
+			fmt.Println("TZ environment:", tzEnv)
+			zoneinfoEnv := os.Getenv("ZONEINFO")
+			fmt.Println("ZONEINFO environment:", zoneinfoEnv)
+		}
 		loc, err := time.LoadLocation(tzEnv)
 		if err != nil {
-			fmt.Println("Error loading time zone:", err)
+			if !stdio {
+				fmt.Println("Error loading time zone:", err)
+			}
 		} else {
-			fmt.Println("Time zone loaded successfully:", loc)
+			if !stdio {
+				fmt.Println("Time zone loaded successfully:", loc)
+			}
 			time.Local = loc //nolint:gosmopolitan // We intentionally set local timezone from TZ env
 		}
 	}
