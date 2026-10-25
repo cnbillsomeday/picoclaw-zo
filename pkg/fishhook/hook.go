@@ -34,6 +34,13 @@ const (
 	// cronSessionPrefix 是 cron 触发回合的 session_key 前缀。
 	cronSessionPrefix = "agent:cron-"
 
+	// speakMarker 是「主动搭话」回合的标记：带这个标记的回合要抽掉工具、
+	// 限死输出长度，逼它一句话说清楚，别把它当任务去查资料。
+	speakMarker = "<!--speak-up-->"
+
+	// speakMaxTokens 是主动搭话回合的输出上限（一句话够用）。
+	speakMaxTokens = 200
+
 	memoryHeading = "## 记忆（自动召回，按相关的旧事；不确定就说不记得，别顺着编）"
 	moodHeading   = "## 心情（现算，会自然回落）"
 )
@@ -207,6 +214,13 @@ func handleBeforeLLM(workspace string, params json.RawMessage) map[string]any {
 	}
 
 	cleaned := stripFishBlock(last.Content)
+
+	// 主动搭话回合：去掉标记、抽掉工具、限死输出，避免模型把它当任务去做。
+	speakTurn := strings.Contains(cleaned, speakMarker)
+	if speakTurn {
+		cleaned = strings.TrimSpace(strings.ReplaceAll(cleaned, speakMarker, ""))
+	}
+
 	if strings.TrimSpace(cleaned) == "" {
 		// 空正文没什么可召回的，也别把一条空消息撑出内容。
 		return fallback
@@ -243,6 +257,14 @@ func handleBeforeLLM(workspace string, params json.RawMessage) map[string]any {
 		return fallback
 	}
 	req["messages"] = encodedMessages
+
+	if speakTurn {
+		// tools 置空 = 这一轮没有可调用的工具（模型只能直接说话）
+		req["tools"] = json.RawMessage("[]")
+		if opts, err := patchMaxTokens(req["options"], speakMaxTokens); err == nil && opts != nil {
+			req["options"] = opts
+		}
+	}
 
 	return map[string]any{"action": "modify", "request": req}
 }
@@ -346,4 +368,17 @@ func isCronSession(sessionKey string) bool {
 
 func logf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "[fishhook] "+format+"\n", args...)
+}
+
+// patchMaxTokens 在原有 options 上覆盖 max_tokens，保留其它键（选项整体替换，
+// 少写一个键就会丢模型参数）。
+func patchMaxTokens(raw json.RawMessage, maxTokens int) (json.RawMessage, error) {
+	opts := map[string]any{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &opts); err != nil {
+			return nil, err
+		}
+	}
+	opts["max_tokens"] = maxTokens
+	return json.Marshal(opts)
 }

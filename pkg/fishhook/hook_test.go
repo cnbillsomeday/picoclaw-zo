@@ -309,3 +309,38 @@ func TestMetaSessionKeyVariants(t *testing.T) {
 		}
 	}
 }
+func TestServeSpeakTurnStripsToolsAndMarker(t *testing.T) {
+	ws := t.TempDir()
+	seedCards(t, ws)
+	h := newHarness(t, ws)
+
+	request := `{"jsonrpc":"2.0","id":9,"method":"hook.before_llm","params":` +
+		`{"meta":{"SessionKey":"agent:cron-abc-123"},"model":"mimo-v2.6-flash",` +
+		`"messages":[{"role":"user","content":"` + speakMarker + `该主动开口了"}],` +
+		`"tools":[{"type":"function","function":{"name":"read_file"}}],` +
+		`"options":{"temperature":0.3,"max_tokens":8192}}}`
+	reply := h.call(request)
+
+	var params struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+		Tools   []any          `json:"tools"`
+		Options map[string]any `json:"options"`
+	}
+	if err := json.Unmarshal(reply.Result["request"], &params); err != nil {
+		t.Fatalf("request 解析失败：%v", err)
+	}
+	if len(params.Tools) != 0 {
+		t.Fatalf("主动搭话回合不该留工具：%v", params.Tools)
+	}
+	if got, ok := params.Options["max_tokens"].(float64); !ok || int(got) != speakMaxTokens {
+		t.Fatalf("max_tokens 应该被压到 %d，得到 %v", speakMaxTokens, params.Options["max_tokens"])
+	}
+	if _, ok := params.Options["temperature"]; !ok {
+		t.Fatalf("其它 options 不许丢：%v", params.Options)
+	}
+	if strings.Contains(params.Messages[0].Content, speakMarker) {
+		t.Fatalf("标记不该留给模型：%q", params.Messages[0].Content)
+	}
+}
