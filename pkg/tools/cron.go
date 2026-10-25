@@ -13,6 +13,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/constants"
 	"github.com/sipeed/picoclaw/pkg/cron"
+	"github.com/sipeed/picoclaw/pkg/fish"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
@@ -729,6 +730,18 @@ func (t *CronTool) runJob(ctx context.Context, args map[string]any) *ToolResult 
 // do its work; the cron service stores it in the job state, so a failed run no
 // longer looks like a successful one.
 func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) (string, error) {
+	// 带骰子的任务先掷一次：没掷中就直接跳过，绝不把「这次不开口」记成失败。
+	if job != nil && job.Payload.Dice != nil && job.Payload.Dice.Enabled {
+		plan := fish.EvaluateSpeak(fish.WorkspacePath())
+		if !plan.Go {
+			reason := strings.TrimSpace(plan.Reason)
+			if reason == "" {
+				reason = plan.Decision
+			}
+			return "speak-up: " + reason, nil
+		}
+	}
+
 	// Get channel/chatID from job payload
 	channel := job.Payload.Channel
 	chatID := job.Payload.To

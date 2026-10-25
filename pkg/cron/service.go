@@ -29,6 +29,14 @@ type CronPayload struct {
 	Command string `json:"command,omitempty"`
 	Channel string `json:"channel,omitempty"`
 	To      string `json:"to,omitempty"`
+	// Dice 打开后，这次任务在跑 agent 之前会先掷一次骰子（主动搭话用）：
+	// 没掷中就直接跳过，不消耗 token。
+	Dice *CronDice `json:"dice,omitempty"`
+}
+
+// CronDice 控制定时任务是否先过一遍鱼骰子。
+type CronDice struct {
+	Enabled bool `json:"enabled"`
 }
 
 type CronJobState struct {

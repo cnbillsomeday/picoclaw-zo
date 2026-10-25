@@ -1900,3 +1900,39 @@ func TestFormatTimeMSInLocation_TruncatesMilliseconds(t *testing.T) {
 		t.Fatalf("rendered time %q resolves to %d ms, want %d ms", got, parsed.UnixMilli(), want)
 	}
 }
+
+// TestCronTool_DiceGateSkipsWithoutMarkingFailure 验证带骰子的任务没掷中时
+// 直接跳过、返回 nil error（不会被 cron 记成失败），也不会跑 agent。
+func TestCronTool_DiceGateSkipsWithoutMarkingFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+
+	// 关掉主动搭话：闸门应该在掷骰之前就判定跳过。
+	speakDir := filepath.Join(home, "workspace", "fish", "speak")
+	if err := os.MkdirAll(speakDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(speakDir, "config.json"), []byte(`{"enabled": false}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	executor := &stubJobExecutor{response: "该说的话"}
+	tool := newTestCronToolWithExecutorAndConfig(t, executor, config.DefaultConfig())
+
+	job := addTestCronJob(t, tool, "speak-up", "telegram", "chat-1", "")
+	job.Payload.Dice = &cron.CronDice{Enabled: true}
+
+	got, err := tool.ExecuteJob(context.Background(), job)
+	if err != nil {
+		t.Fatalf("跳过时不该返回错误（否则 cron 会记成失败）：%v", err)
+	}
+	if !strings.HasPrefix(got, "speak-up: ") {
+		t.Fatalf("返回值应该带 speak-up 前缀，得到 %q", got)
+	}
+	if !strings.Contains(got, "总开关") {
+		t.Fatalf("应该说明跳过的原因，得到 %q", got)
+	}
+	if executor.lastPrompt != "" {
+		t.Fatalf("没掷中不该跑 agent，却收到 %q", executor.lastPrompt)
+	}
+}
