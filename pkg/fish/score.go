@@ -18,7 +18,9 @@ const (
 	// QueryTermLimit 是参与打分的查询词上限（按 idf 取最高）。
 	QueryTermLimit = 40
 	// ScoreAbsMin 是绝对门槛；相对门槛是最高分的 55%。
-	ScoreAbsMin = 2.0
+	// ScoreAbsMin 是绝对门槛（IDF 加权后的证据分）。语料小的时候 IDF 上限本来
+	// 就低，门槛定太高会把正常问话全挡在外面，所以放到 1.2，主要靠相对门槛收噪声。
+	ScoreAbsMin = 1.6
 	ScoreRelMin = 0.55
 	// DefaultRecallLimit 是默认保留条数。
 	DefaultRecallLimit = 6

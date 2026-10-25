@@ -134,9 +134,9 @@ func TestImportCardsIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImportCards: %v", err)
 	}
-	// 两段 + 第一段里那条长 bullet + 一条有效 bullet（"短" 只有 3 个字符不计数）
-	if added != 4 {
-		t.Fatalf("想要新增 4 张，得到 %d（skipped=%d）", added, skipped)
+	// 第一段只有一条有效 bullet（"短" 太短不算），按整段留一张；另两段各一张。
+	if added != 3 {
+		t.Fatalf("想要新增 3 张，得到 %d（skipped=%d）", added, skipped)
 	}
 
 	added2, skipped2, err := ImportCards(ws, path)
@@ -146,7 +146,7 @@ func TestImportCardsIsIdempotent(t *testing.T) {
 	if added2 != 0 {
 		t.Fatalf("重复导入不该新增，得到 %d", added2)
 	}
-	if skipped2 != 4 {
+	if skipped2 != 3 {
 		t.Fatalf("重复导入应该全部跳过，得到 %d", skipped2)
 	}
 
@@ -154,8 +154,8 @@ func TestImportCardsIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cards) != 4 {
-		t.Fatalf("想要 4 张卡，得到 %d", len(cards))
+	if len(cards) != 3 {
+		t.Fatalf("想要 3 张卡（第一段只有一条有效 bullet，按整段留一张），得到 %d", len(cards))
 	}
 
 	byText := make(map[string]Card, len(cards))
@@ -163,9 +163,15 @@ func TestImportCardsIsIdempotent(t *testing.T) {
 		byText[c.Text] = c
 	}
 
-	bullet, ok := byText["他偏爱自己拍板，讨厌被安排"]
-	if !ok {
-		t.Fatalf("bullet 没成卡：%+v", cards)
+	var bullet *Card
+	for i := range cards {
+		if strings.Contains(cards[i].Text, "他偏爱自己拍板，讨厌被安排") {
+			bullet = &cards[i]
+			break
+		}
+	}
+	if bullet == nil {
+		t.Fatalf("bullet 文本没进任何卡片：%+v", cards)
 	}
 	if bullet.Kind != CardKindFact {
 		t.Fatalf("含「要求/偏爱」类词的 bullet 应该是 fact，得到 %s", bullet.Kind)

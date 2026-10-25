@@ -309,7 +309,7 @@ func (c *FeishuChannel) SendPlaceholder(ctx context.Context, chatID string) (str
 	}
 
 	req := larkim.NewCreateMessageReqBuilder().
-		ReceiveIdType(larkim.CreateMessageV1ReceiveIDTypeChatId).
+		ReceiveIdType(feishuReceiveIDType(chatID)).
 		Body(larkim.NewCreateMessageReqBodyBuilder().
 			ReceiveId(chatID).
 			MsgType(larkim.MsgTypeInteractive).
@@ -1079,7 +1079,7 @@ func appendMediaTags(content, messageType string, mediaRefs []string) string {
 // sendCard sends an interactive card message to a chat.
 func (c *FeishuChannel) sendCard(ctx context.Context, chatID, cardContent string) (string, error) {
 	req := larkim.NewCreateMessageReqBuilder().
-		ReceiveIdType(larkim.CreateMessageV1ReceiveIDTypeChatId).
+		ReceiveIdType(feishuReceiveIDType(chatID)).
 		Body(larkim.NewCreateMessageReqBodyBuilder().
 			ReceiveId(chatID).
 			MsgType(larkim.MsgTypeInteractive).
@@ -1112,7 +1112,7 @@ func (c *FeishuChannel) sendText(ctx context.Context, chatID, text string) (stri
 	content, _ := json.Marshal(map[string]string{"text": text})
 
 	req := larkim.NewCreateMessageReqBuilder().
-		ReceiveIdType(larkim.CreateMessageV1ReceiveIDTypeChatId).
+		ReceiveIdType(feishuReceiveIDType(chatID)).
 		Body(larkim.NewCreateMessageReqBodyBuilder().
 			ReceiveId(chatID).
 			MsgType(larkim.MsgTypeText).
@@ -1166,7 +1166,7 @@ func (c *FeishuChannel) sendImage(ctx context.Context, chatID string, file *os.F
 	// Send image message
 	content, _ := json.Marshal(map[string]string{"image_key": imageKey})
 	req := larkim.NewCreateMessageReqBuilder().
-		ReceiveIdType(larkim.CreateMessageV1ReceiveIDTypeChatId).
+		ReceiveIdType(feishuReceiveIDType(chatID)).
 		Body(larkim.NewCreateMessageReqBodyBuilder().
 			ReceiveId(chatID).
 			MsgType(larkim.MsgTypeImage).
@@ -1222,7 +1222,7 @@ func (c *FeishuChannel) sendFile(ctx context.Context, chatID string, file *os.Fi
 	// Send file message
 	content, _ := json.Marshal(map[string]string{"file_key": fileKey})
 	req := larkim.NewCreateMessageReqBuilder().
-		ReceiveIdType(larkim.CreateMessageV1ReceiveIDTypeChatId).
+		ReceiveIdType(feishuReceiveIDType(chatID)).
 		Body(larkim.NewCreateMessageReqBodyBuilder().
 			ReceiveId(chatID).
 			MsgType(larkim.MsgTypeFile).
@@ -1267,5 +1267,19 @@ func (c *FeishuChannel) invalidateTokenOnAuthError(code int) {
 	if code == errCodeTenantTokenInvalid {
 		c.tokenCache.InvalidateAll()
 		logger.WarnCF("feishu", "Invalidated cached token due to auth error", nil)
+	}
+}
+
+// feishuReceiveIDType 按 id 前缀挑 receive_id_type。
+// 主动外发（cron / 提醒）没有会话上下文，手上往往只有 open_id（ou_）或
+// union_id（on_）；写死 chat_id 会报 230001 invalid receive_id。
+func feishuReceiveIDType(id string) string {
+	switch {
+	case strings.HasPrefix(id, "ou_"):
+		return larkim.CreateMessageV1ReceiveIDTypeOpenId
+	case strings.HasPrefix(id, "on_"):
+		return larkim.CreateMessageV1ReceiveIDTypeUnionId
+	default:
+		return larkim.CreateMessageV1ReceiveIDTypeChatId
 	}
 }

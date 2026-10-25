@@ -273,15 +273,29 @@ func ImportCards(workspace, memoryFile string) (added, skipped int, err error) {
 
 // splitMemoryCards 按 § 分段并收集 bullet 卡片。
 func splitMemoryCards(raw string) []string {
-	var blocks []string
-	var bullets []string
+	var out []string
 	var cur []string
 
 	flush := func() {
 		if len(cur) == 0 {
 			return
 		}
-		blocks = append(blocks, strings.Join(cur, "\n"))
+		block := strings.Join(cur, "\n")
+
+		// 一段里 bullet 够多就拆成一条条，别再把整段当一张大卡（否则一份
+		// markdown 记忆会被反复记成同一坨，还跟 bullet 卡重复）。
+		var bullets []string
+		for _, line := range cur {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "- ") && utf8.RuneCountInString(trimmed) > 10 {
+				bullets = append(bullets, trimmed[2:])
+			}
+		}
+		if len(bullets) >= 2 {
+			out = append(out, bullets...)
+		} else {
+			out = append(out, block)
+		}
 		cur = cur[:0]
 	}
 
@@ -291,15 +305,10 @@ func splitMemoryCards(raw string) []string {
 			continue
 		}
 		cur = append(cur, line)
-		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "- ") {
-			if utf8.RuneCountInString(trimmed) > 10 {
-				bullets = append(bullets, trimmed[2:])
-			}
-		}
 	}
 	flush()
 
-	return append(blocks, bullets...)
+	return out
 }
 
 // classifyCard 判断一段正文更像事实还是事件。
