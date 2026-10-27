@@ -181,8 +181,8 @@ func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
 // (for example a post-turn "conversation summarized" report). Such notices are
 // not followed by a final reply, so channels must deliver them as plain
 // messages instead of tracking them as a reusable progress card. Leaving them
-// tracked is what made a later slash-command reply replace an old bubble
-// instead of posting a fresh message.
+// tracked makes a later slash-command reply replace an old bubble instead of
+// posting a fresh message.
 const ToolFeedbackTerminalKey = "tool_feedback_terminal"
 
 // OutboundToolFeedbackIsTerminal reports whether the outbound message is a
@@ -1037,13 +1037,6 @@ func (m *Manager) initChannel(typeName, channelName string) {
 			"error":   err.Error(),
 		})
 	} else {
-		// Inject the runtime event bus into channels that opt in (additive hook;
-		// the A2A channel uses it for wake summaries and turn settlement).
-		if m.runtimeEvents != nil {
-			if setter, ok := ch.(interface{ SetRuntimeEvents(runtimeevents.Bus) }); ok {
-				setter.SetRuntimeEvents(m.runtimeEvents)
-			}
-		}
 		// Inject MediaStore if channel supports it
 		if m.mediaStore != nil {
 			if setter, ok := ch.(mediaStoreSetter); ok {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+	"golang.org/x/net/http/httpguts"
 
 	"github.com/sipeed/picoclaw/pkg"
 	"github.com/sipeed/picoclaw/pkg/fileutil"
@@ -521,9 +522,18 @@ type RoutingConfig struct {
 	LightModel string  `json:"light_model"` // model_name from model_list to use for simple tasks
 	Threshold  float64 `json:"threshold"`   // complexity score in [0,1]; score >= threshold → primary model
 
+	// EscalationPromptTokens moves the rest of the turn to the primary model
+	// after a light-model response reports more prompt tokens than this.
+	// Zero uses the routing.Router default (32768).
+	EscalationPromptTokens int `json:"escalation_prompt_tokens,omitempty"`
+	// EscalationToolIterations moves the rest of the turn to the primary model
+	// after this many consecutive light-model responses requested tools.
+	// Zero uses the routing.Router default (3).
+	EscalationToolIterations int `json:"escalation_tool_iterations,omitempty"`
+
 	// The following fields are present in PicoClaw v1.4.2.1 configs. They are
-	// accepted and preserved for compatibility; routing escalation and the
-	// repeat breaker are not implemented by this fork.
+	// accepted and preserved so an older config keeps its values on the next
+	// save; escalation itself is driven by the fields above.
 	EscalatePromptTokens    int `json:"escalate_prompt_tokens,omitempty"`
 	EscalateToolIterations  int `json:"escalate_tool_iterations,omitempty"`
 	RepeatBreakerIterations int `json:"repeat_breaker_iterations,omitempty"`
@@ -594,7 +604,7 @@ type AgentDefaults struct {
 	ContextWindow             int                 `json:"context_window,omitempty"             env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_WINDOW"`
 	Temperature               *float64            `json:"temperature,omitempty"                env:"PICOCLAW_AGENTS_DEFAULTS_TEMPERATURE"`
 	MaxToolIterations         int                 `json:"max_tool_iterations"                  env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"`
-	SummarizeMessageThreshold int                 `json:"summarize_message_threshold"          env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_MESSAGE_THRESHOLD"`
+	SummarizeMessageThreshold int                 `json:"summarize_message_threshold"          env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_MESSAGE_THRESHOLD"` // Deprecated: ignored; summarization is driven by SummarizeTokenPercent
 	SummarizeTokenPercent     int                 `json:"summarize_token_percent"              env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_TOKEN_PERCENT"`
 	MaxMediaSize              int                 `json:"max_media_size,omitempty"             env:"PICOCLAW_AGENTS_DEFAULTS_MAX_MEDIA_SIZE"`
 	VisionMaxImageDimension   int                 `json:"vision_max_image_dimension,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_VISION_MAX_IMAGE_DIMENSION"`
@@ -611,6 +621,14 @@ type AgentDefaults struct {
 	TurnProfile               TurnProfileConfig   `json:"turn_profile,omitempty"`
 	MaxLLMRetries             int                 `json:"max_llm_retries,omitempty"            env:"PICOCLAW_AGENTS_DEFAULTS_MAX_LLM_RETRIES"`
 	LLMRetryBackoffSecs       int                 `json:"llm_retry_backoff_secs,omitempty"     env:"PICOCLAW_AGENTS_DEFAULTS_LLM_RETRY_BACKOFF_SECS"`
+	// LLMRetryOnEmptyContent retries a successful response that carries no
+	// assistant text and no tool calls instead of surfacing it as the final
+	// answer. LLMRetryOnFinishReasons lists finish_reason values that are also
+	// retried; the default "length" also covers the "truncated" spelling that
+	// some provider paths use for the same condition. Both fields are always
+	// serialized so an explicit false or empty list survives save and reload.
+	LLMRetryOnEmptyContent  bool     `json:"llm_retry_on_empty_content"  env:"PICOCLAW_AGENTS_DEFAULTS_LLM_RETRY_ON_EMPTY_CONTENT"`
+	LLMRetryOnFinishReasons []string `json:"llm_retry_on_finish_reasons" env:"PICOCLAW_AGENTS_DEFAULTS_LLM_RETRY_ON_FINISH_REASONS"`
 }
 
 const DefaultMaxMediaSize = 20 * 1024 * 1024 // 20 MB
@@ -1035,9 +1053,10 @@ type ModelConfig struct {
 	// UserAgent is the user agent string to use for HTTP requests.
 	UserAgent string `json:"user_agent,omitempty" yaml:"-"`
 
-	// SessionHeader is the per-session request header name used by PicoClaw
-	// v1.4.2.1 configs. Providers that support session routing receive it
-	// through SetSessionHeader during provider construction.
+	// SessionHeader is the request header name that carries a stable
+	// per-conversation session ID. Providers supporting the generic session-key
+	// header receive it through SetSessionHeader during provider construction.
+	// Leave empty to disable the header for this model.
 	SessionHeader string `json:"session_header,omitempty" yaml:"-"`
 
 	// isVirtual marks this model as a virtual model generated from multi-key expansion.
@@ -1084,8 +1103,10 @@ func (c *ModelConfig) Validate() error {
 	if strings.Contains(c.Model, "//") {
 		return fmt.Errorf("model identifier must not contain //")
 	}
-	if c.SessionHeader != "" && strings.ContainsAny(c.SessionHeader, " \t\r\n") {
-		return fmt.Errorf("session_header must not contain whitespace")
+
+	// Reject header names that cannot be written on the wire
+	if c.SessionHeader != "" && !httpguts.ValidHeaderFieldName(c.SessionHeader) {
+		return fmt.Errorf("session_header must be a valid HTTP header name")
 	}
 	return nil
 }
@@ -1869,6 +1890,14 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid gateway host: %w", err)
 	}
 
+	// Reject null entries before expansion: expandMultiKeyModels dereferences
+	// every entry, and a hand-edited or generated config can contain null.
+	for i, model := range cfg.ModelList {
+		if model == nil {
+			return nil, fmt.Errorf("model_list[%d]: model entry is null", i)
+		}
+	}
+
 	// Expand multi-key configs into separate entries for key-level failover
 	cfg.ModelList = expandMultiKeyModels(cfg.ModelList)
 
@@ -2075,6 +2104,9 @@ func (c *Config) findMatches(modelName string) []*ModelConfig {
 // Note: Multiple entries with the same model_name are allowed for load balancing.
 func (c *Config) ValidateModelList() error {
 	for i := range c.ModelList {
+		if c.ModelList[i] == nil {
+			return fmt.Errorf("model_list[%d]: model entry is null", i)
+		}
 		if err := c.ModelList[i].Validate(); err != nil {
 			return fmt.Errorf("model_list[%d]: %w", i, err)
 		}
@@ -2142,6 +2174,7 @@ func expandMultiKeyModels(models []*ModelConfig) []*ModelConfig {
 				ExtraBody:           m.ExtraBody,
 				CustomHeaders:       m.CustomHeaders,
 				UserAgent:           m.UserAgent,
+				SessionHeader:       m.SessionHeader,
 				isVirtual:           true,
 			}
 			expanded = append(expanded, additionalEntry)
@@ -2167,6 +2200,7 @@ func expandMultiKeyModels(models []*ModelConfig) []*ModelConfig {
 			ExtraBody:           m.ExtraBody,
 			CustomHeaders:       m.CustomHeaders,
 			UserAgent:           m.UserAgent,
+			SessionHeader:       m.SessionHeader,
 			APIKeys:             SimpleSecureStrings(keys[0]),
 		}
 

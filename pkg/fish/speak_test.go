@@ -98,9 +98,9 @@ func TestInQuietCrossMidnight(t *testing.T) {
 		{1, [2]int{1, 8}, true},    // 普通区间
 		{7, [2]int{1, 8}, true},
 		{8, [2]int{1, 8}, false},
-		{3, [2]int{3, 3}, false},   // 起===止 表示不启用
-		{0, [2]int{0, 0}, false},   // 同上
-		{5, [2]int{5, 0}, true},    // 5 点到 0 点：跨午夜
+		{3, [2]int{3, 3}, false}, // 起===止 表示不启用
+		{0, [2]int{0, 0}, false}, // 同上
+		{5, [2]int{5, 0}, true},  // 5 点到 0 点：跨午夜
 	}
 	for _, c := range cases {
 		if got := InQuiet(c.hour, c.quiet); got != c.want {

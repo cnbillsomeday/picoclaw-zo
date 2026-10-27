@@ -9,8 +9,9 @@
 > PicoClaw is small on purpose. Small is not lesser. Small is enough.
 >
 > **picoclaw-zo** is this fork's project name. Versioning tracks upstream releases
-> (`v0.5.1+zo.N`), while the Go module path, binary names, config directory, and
-> service names stay compatible with upstream PicoClaw.
+> (`vX.Y.Z+zo.N`, e.g. `v0.5.2+zo.85`); `N` keeps counting across upstream bumps
+> and never restarts, while the Go module path, binary names, config directory,
+> and service names stay compatible with upstream PicoClaw.
 
 <h3>$10 Hardware · 10–20 MB RAM · ms Boot · Let's Go, PicoClaw!</h3>
 
@@ -263,7 +264,7 @@ builds with Telegram only:
 make build GO_BUILD_TAGS='goolm,stdjson,custom_channels,channel_telegram'
 ```
 
-[Seahorse](docs/architecture/session-startup-and-pruning.md) is PicoClaw's
+[Seahorse](docs/architecture/seahorse-memory.md) is PicoClaw's
 built-in memory system: the `seahorse` context manager keeps a local SQLite
 database with an FTS5 index over the session history, so the agent can recall
 and compact older context. To shrink the footprint further, build without it
