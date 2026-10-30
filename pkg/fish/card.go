@@ -125,8 +125,19 @@ func loadRawCards(workspace string) ([]Card, error) {
 }
 
 // AddCard 追加一张卡片；带 key 时把同 key 且未取代的旧卡标成 superseded_by。
-// 返回新卡和被顶掉的旧卡数量。
+// 返回新卡和被顶掉的旧卡数量。整个读-改-写过程持锁，可与其他进程并发调用。
 func AddCard(workspace string, in NewCard) (Card, int, error) {
+	var card Card
+	var replaced int
+	err := withCardsLock(workspace, func() error {
+		var err error
+		card, replaced, err = addCardUnlocked(workspace, in)
+		return err
+	})
+	return card, replaced, err
+}
+
+func addCardUnlocked(workspace string, in NewCard) (Card, int, error) {
 	text := NormalizeText(in.Text)
 	if text == "" {
 		return Card{}, 0, fmt.Errorf("卡片正文不能为空")

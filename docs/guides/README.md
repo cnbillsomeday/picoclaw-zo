@@ -13,6 +13,7 @@ Task-oriented guides for setup, configuration, and common PicoClaw workflows.
 - [Routing Guide](routing-guide.md): agent dispatch, session overrides, and light-model routing.
 - [Chat Apps Configuration](chat-apps.md): supported chat platforms and channel-specific setup paths.
 - [Providers & Model Configuration](providers.md): `model_list`, providers, and model routing.
+- [MCP Server](mcp-server.md): share persona, memory and session archives with external agents (no model calls).
 - [Custom Builds](custom-builds.md): build tags for channel selection, Seahorse, and SQLite dependencies.
 - [Spawn & Async Tasks](spawn-tasks.md): background work, long-running tasks, and sub-agent orchestration.
 - [PicoClaw Hardware Compatibility List](hardware-compatibility.md): tested boards and platform notes.
