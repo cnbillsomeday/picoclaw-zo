@@ -247,7 +247,40 @@ func AddMoodEvent(workspace string, d float64, emo map[string]float64, why, sid 
 	if err := appendJSONLine(MoodEventsPath(workspace), event); err != nil {
 		return MoodState{}, err
 	}
+	if err := pruneMoodEvents(workspace, now); err != nil {
+		// 清理失败不影响记账；下次写入再试。
+		_ = err
+	}
 	return LoadMoodAt(workspace, now)
+}
+
+// moodEventsRetention keeps events.jsonl bounded: events older than this
+// contribute nothing (their decayed weight rounds to zero) but the file used
+// to grow forever and every before_llm hook re-scanned all of it.
+const moodEventsRetention = 7 * 24 * time.Hour
+
+// pruneMoodEvents rewrites events.jsonl keeping only events inside the
+// retention window. Best-effort: callers ignore the error.
+func pruneMoodEvents(workspace string, now time.Time) error {
+	events, err := LoadMoodEvents(workspace)
+	if err != nil {
+		return err
+	}
+	cutoff := now.Add(-moodEventsRetention)
+	kept := make([]any, 0, len(events))
+	dropped := 0
+	for _, e := range events {
+		ts, ok := parseMoodTS(e.TS)
+		if !ok || ts.Before(cutoff) {
+			dropped++
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if dropped == 0 {
+		return nil
+	}
+	return writeJSONLines(MoodEventsPath(workspace), kept)
 }
 
 // LoadMoodAt 用指定时间现算（便于单测）。
