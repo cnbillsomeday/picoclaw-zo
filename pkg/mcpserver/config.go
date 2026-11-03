@@ -83,6 +83,12 @@ func LoadConfig(workspace string) (Config, error) {
 		if a.Name != sanitizeName(a.Name) {
 			return cfg, fmt.Errorf("mcp: agent name %q may only contain letters, digits, '.', '_' and '-'", a.Name)
 		}
+		// "." and ".." survive sanitisation (the alphabet allows dots) but
+		// would make sessionsRoot resolve to the workspace root, escaping
+		// the sessions-external directory entirely.
+		if a.Name == "." || a.Name == ".." {
+			return cfg, fmt.Errorf("mcp: agent name %q is not allowed", a.Name)
+		}
 		if seen[a.Name] {
 			return cfg, fmt.Errorf("mcp: duplicate agent name %q", a.Name)
 		}

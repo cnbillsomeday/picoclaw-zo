@@ -69,10 +69,19 @@ func sessionsRoot(workspace, agent string) string {
 }
 
 func sessionDir(workspace, agent, id string) (string, error) {
-	if id == "" || sanitizeName(id) != id {
+	id = strings.TrimSpace(id)
+	if id == "" || id == "." || id == ".." || sanitizeName(id) != id {
 		return "", fmt.Errorf("mcp: invalid session id %q", id)
 	}
-	return filepath.Join(sessionsRoot(workspace, agent), id), nil
+	safeAgent := sanitizeName(agent)
+	if safeAgent == "" || safeAgent == "." || safeAgent == ".." {
+		return "", fmt.Errorf("mcp: invalid agent name %q", agent)
+	}
+	dir := filepath.Join(sessionsRoot(workspace, safeAgent), id)
+	if !strings.HasPrefix(dir, sessionsRoot(workspace, safeAgent)+string(filepath.Separator)) {
+		return "", fmt.Errorf("mcp: session id %q escapes its agent directory", id)
+	}
+	return dir, nil
 }
 
 func writeJSONFile(path string, v any) error {
@@ -83,7 +92,52 @@ func writeJSONFile(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(body, '\n'), 0o600)
+	// Atomic replace: a crash mid-write must not leave a truncated meta.json
+	// for the next reader.
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp.*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.Write(append(body, '\n')); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+// withSessionLock serialises read-modify-write of one session directory
+// across goroutines and processes (gateway + several MCP clients may touch
+// the same session). Same reclaim-stale-lock pattern as pkg/fish/lock.go.
+func withSessionLock(dir string, fn func() error) error {
+	lockPath := filepath.Join(dir, ".lock")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_ = f.Close()
+			defer func() { _ = os.Remove(lockPath) }()
+			return fn()
+		}
+		if !os.IsExist(err) {
+			return err
+		}
+		if st, statErr := os.Stat(lockPath); statErr == nil && time.Since(st.ModTime()) > 60*time.Second {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("mcp: timed out waiting for session lock in %s", dir)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func readMeta(dir string) (ExternalSession, error) {
@@ -120,27 +174,11 @@ func AppendMessages(workspace, agent, id string, msgs []TranscriptMessage) (int,
 	if err != nil {
 		return 0, err
 	}
-	meta, err := readMeta(dir)
-	if err != nil {
-		return 0, fmt.Errorf("mcp: session %q not found for agent %q", id, agent)
-	}
-	if meta.Status != sessionStatusOpen {
-		return 0, fmt.Errorf("mcp: session %q is already closed", id)
-	}
 	if len(msgs) == 0 {
 		return 0, fmt.Errorf("mcp: messages must not be empty")
 	}
-
-	path := filepath.Join(dir, "transcript.jsonl")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return 0, err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = f.Close() }()
-
+	// Validate everything before touching disk: a bad message must not
+	// leave a half-written transcript while meta stays unchanged.
 	now := time.Now().UTC().Format(time.RFC3339)
 	for i := range msgs {
 		if strings.TrimSpace(msgs[i].Role) == "" {
@@ -149,16 +187,38 @@ func AppendMessages(workspace, agent, id string, msgs []TranscriptMessage) (int,
 		if msgs[i].TS == "" {
 			msgs[i].TS = now
 		}
-		body, err := json.Marshal(msgs[i])
-		if err != nil {
-			return 0, err
-		}
-		if _, err := f.Write(append(body, '\n')); err != nil {
-			return 0, err
-		}
 	}
-	meta.Messages += len(msgs)
-	if err := writeJSONFile(filepath.Join(dir, "meta.json"), meta); err != nil {
+
+	err = withSessionLock(dir, func() error {
+		meta, err := readMeta(dir)
+		if err != nil {
+			return fmt.Errorf("mcp: session %q not found for agent %q", id, agent)
+		}
+		if meta.Status != sessionStatusOpen {
+			return fmt.Errorf("mcp: session %q is already closed", id)
+		}
+		path := filepath.Join(dir, "transcript.jsonl")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		for i := range msgs {
+			body, err := json.Marshal(msgs[i])
+			if err != nil {
+				return err
+			}
+			if _, err := f.Write(append(body, '\n')); err != nil {
+				return err
+			}
+		}
+		meta.Messages += len(msgs)
+		return writeJSONFile(filepath.Join(dir, "meta.json"), meta)
+	})
+	if err != nil {
 		return 0, err
 	}
 	return len(msgs), nil
@@ -170,14 +230,22 @@ func EndSession(workspace, agent, id, summary string) (ExternalSession, error) {
 	if err != nil {
 		return ExternalSession{}, err
 	}
-	meta, err := readMeta(dir)
+	var meta ExternalSession
+	err = withSessionLock(dir, func() error {
+		m, err := readMeta(dir)
+		if err != nil {
+			return fmt.Errorf("mcp: session %q not found for agent %q", id, agent)
+		}
+		m.Status = sessionStatusClosed
+		m.Summary = strings.TrimSpace(summary)
+		m.EndedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := writeJSONFile(filepath.Join(dir, "meta.json"), m); err != nil {
+			return err
+		}
+		meta = m
+		return nil
+	})
 	if err != nil {
-		return ExternalSession{}, fmt.Errorf("mcp: session %q not found for agent %q", id, agent)
-	}
-	meta.Status = sessionStatusClosed
-	meta.Summary = strings.TrimSpace(summary)
-	meta.EndedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := writeJSONFile(filepath.Join(dir, "meta.json"), meta); err != nil {
 		return ExternalSession{}, err
 	}
 	return meta, nil

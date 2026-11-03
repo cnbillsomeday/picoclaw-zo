@@ -81,9 +81,14 @@ func (s *Server) Addr() string {
 // ListenAndServe runs until ctx is cancelled.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	srv := &http.Server{
-		Addr:              s.Addr(),
-		Handler:           s.Handler(),
+		Addr:    s.Addr(),
+		Handler: s.Handler(),
+		// A slow or stalled client must not hold a connection forever.
+		// No WriteTimeout: MCP tool calls may legitimately read large
+		// transcripts and we let the handler's own context bound work.
 		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
