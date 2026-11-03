@@ -104,3 +104,16 @@
 | 附带 | 上游子命令列表测试补 `fish`（既有漂移，非批次 1 引入） |
 
 验证：build / vet / gofmt / 相关包单测 / `-race` / A2A 集成测试 / `cmd/picoclaw` 全部通过。
+
+### 批次 2（2026-11-03）
+
+| 问题 | 状态 |
+|---|---|
+| #5 A2A notify reply 队列无 TTL | ✅ 已修（queuedAt + 10 分钟 TTL，用渠道时钟判断，测试顺带暴露并修复了 wall-clock 错误） |
+| #9 mcpserver token 非恒时比较 / Bearer 无空格 | ✅ 已修（ConstantTimeCompare 全候选扫描 + 强制 "Bearer " 前缀） |
+| #10 fish LoadMoodConfig 半解析 | ✅ 已修（坏文件整体回落默认，字段级合并仅收正值） |
+| #11 fish 坏 TS 事件全额生效 | ✅ 已修（parseMoodTS 返回 ok，坏事件跳过） |
+| #12 fish speak state 无锁 | ✅ 已修（withSpeakStateLock + 原子写 + 0600） |
+| #13 session header 保留头 | ✅ 已修（18 个保留头大小写不敏感拒绝） |
+
+验证：build / vet / gofmt / fish+mcpserver+a2a+config 单测 / -race / A2A 集成 / web/backend/api 全部通过。
