@@ -1259,6 +1259,21 @@ func (m *Manager) unregisterChannelHTTPHandler(name string, ch Channel) {
 	}
 }
 
+// attachRuntimeEvents injects the runtime event bus into channels that accept
+// it. The A2A channel subscribes to turn events through this hook to settle
+// inbound messages and publish owner wake summaries; without it those
+// notifications are silently dropped.
+func (m *Manager) attachRuntimeEvents(channel Channel) {
+	if m.runtimeEvents == nil || channel == nil {
+		return
+	}
+	if setter, ok := channel.(interface {
+		SetRuntimeEvents(runtimeevents.Bus)
+	}); ok {
+		setter.SetRuntimeEvents(m.runtimeEvents)
+	}
+}
+
 func (m *Manager) StartAll(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1276,6 +1291,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	failedNames := make([]string, 0, len(m.channels))
 
 	for name, channel := range m.channels {
+		m.attachRuntimeEvents(channel)
 		logger.InfoCF("channels", "Starting channel", map[string]any{
 			"channel": name,
 		})
@@ -2030,6 +2046,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	}
 	for _, name := range added {
 		channel := m.channels[name]
+		m.attachRuntimeEvents(channel)
 		logger.InfoCF("channels", "Starting channel", map[string]any{
 			"channel": name,
 		})
