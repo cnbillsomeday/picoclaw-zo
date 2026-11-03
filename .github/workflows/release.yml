@@ -74,7 +74,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login to Docker Hub
+      - name: Login to Docker Hub (skipped for picoclaw-zo)
+        if: false
         uses: docker/login-action@v4
         with:
           registry: docker.io
@@ -89,7 +90,9 @@ jobs:
         with:
           distribution: goreleaser
           version: ~> v2
-          args: release --clean
+          # picoclaw-zo has no Docker Hub credentials: skip docker builds,
+          # binaries/archive are still produced and published.
+          args: release --clean --skips=docker
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
