@@ -117,3 +117,21 @@
 | #13 session header 保留头 | ✅ 已修（18 个保留头大小写不敏感拒绝） |
 
 验证：build / vet / gofmt / fish+mcpserver+a2a+config 单测 / -race / A2A 集成 / web/backend/api 全部通过。
+
+### 批次 3（2026-11-03）
+
+| 问题 | 状态 |
+|---|---|
+| A2A state 每轮全量写盘 | ✅ 已修（全 mutator 置脏 + SaveIfDirty，纯 tick 轮不再写盘） |
+| fish imp 无上限 | ✅ 已修（clamp [0,1]） |
+| fish AddCard 重复 ID | ✅ 已修（显式日期幂等；无日期保留上游"再记一笔"语义，锁测试语义不受影响） |
+| fish 单汉字无法召回 | ✅ 已修（unigram token） |
+| fish IsPeak 不支持跨午夜 | ✅ 已修（与 InQuiet 一致，start==end 仍为禁用） |
+| fish LoadSpeakState 损坏静默清零 | ✅ 已修（改名为 .corrupt 备份） |
+| fish events.jsonl 无界增长 | ✅ 已修（7 天滚动清理，原子重写） |
+| mcpserver content 被 trim | ✅ 已修（argStringRaw，verbatim 存储） |
+| mcpserver sessionID 碰撞 | ✅ 已修（4→8 随机字节） |
+| 上游 custom_channels 构建失败 | ✅ 已修（generateQRDataURI 移入无 tag 的 qr.go；两种 tag 组合均构建通过） |
+| patches/0002 过期 | ✅ 已更新（记录 attachRuntimeEvents 现状与 rebase 提示） |
+
+验证：4 种 build-tag 组合构建 / vet / gofmt / 全相关包单测 / -race / A2A 集成 / agent+channels 回归全部通过。
