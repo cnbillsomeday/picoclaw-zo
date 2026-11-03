@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -390,5 +391,47 @@ func TestSpeakStateConcurrentTouchAndEvaluate(t *testing.T) {
 	}
 	if _, err := os.Stat(SpeakStatePath(workspace) + ".lock"); !os.IsNotExist(err) {
 		t.Fatal("speak state lock file left behind")
+	}
+}
+
+func TestIsPeakCrossesMidnight(t *testing.T) {
+	// 22..6 covers 22:00-23:59 and 00:00-05:59.
+	window := [][2]int{{22, 6}}
+	late := time.Date(2026, 11, 3, 23, 0, 0, 0, time.Local)
+	early := time.Date(2026, 11, 4, 5, 0, 0, 0, time.Local)
+	noon := time.Date(2026, 11, 4, 12, 0, 0, 0, time.Local)
+	if !IsPeak(late, window) || !IsPeak(early, window) {
+		t.Fatal("midnight-crossing window missed its edges")
+	}
+	if IsPeak(noon, window) {
+		t.Fatal("noon must not be peak for 22..6")
+	}
+	// start==end still means disabled.
+	if IsPeak(noon, [][2]int{{9, 9}}) {
+		t.Fatal("start==end window must be disabled")
+	}
+}
+
+func TestLoadSpeakStateCorruptBacksUp(t *testing.T) {
+	workspace := t.TempDir()
+	path := SpeakStatePath(workspace)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := LoadSpeakState(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != (SpeakState{}) {
+		t.Fatalf("state = %+v, want zero", state)
+	}
+	if _, err := os.Stat(path + ".corrupt"); err != nil {
+		t.Fatalf("corrupt file not backed up: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("corrupt file should have been renamed away")
 	}
 }

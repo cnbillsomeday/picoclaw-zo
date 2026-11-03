@@ -143,6 +143,23 @@ func addCardUnlocked(workspace string, in NewCard) (Card, int, error) {
 		return Card{}, 0, fmt.Errorf("卡片正文不能为空")
 	}
 
+	// Idempotent only when the caller pins an explicit date (T): replaying
+	// an explicit add must not create duplicate IDs (superseded_by targets
+	// would become ambiguous). Without an explicit T the historical "log it
+	// again" behaviour is preserved — upstream's lock tests rely on it.
+	if t0 := strings.TrimSpace(in.T); t0 != "" {
+		wantID := CardID(text, t0)
+		rows, err := loadRawCards(workspace)
+		if err != nil {
+			return Card{}, 0, err
+		}
+		for _, row := range rows {
+			if row.ID == wantID && (row.SupersededBy == nil || *row.SupersededBy == "") {
+				return row, 0, nil
+			}
+		}
+	}
+
 	t := strings.TrimSpace(in.T)
 	if t == "" {
 		t = time.Now().Format("2006-01-02")
@@ -154,6 +171,11 @@ func addCardUnlocked(workspace string, in NewCard) (Card, int, error) {
 	imp := in.Imp
 	if imp <= 0 {
 		imp = DefaultCardImp
+	}
+	// The flag documents 0~1; an out-of-range value would distort the score
+	// weight (0.7+0.3*imp) without anyone noticing.
+	if imp > 1 {
+		imp = 1
 	}
 	half := in.Half
 	if half <= 0 {

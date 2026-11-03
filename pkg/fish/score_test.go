@@ -429,3 +429,10 @@ func TestRenderEmptyDateAndLimit(t *testing.T) {
 		t.Fatalf("「日期」不在正文里，不该命中，得到 %d", got)
 	}
 }
+
+func TestTokensSingleHanCharacter(t *testing.T) {
+	got := tokens("茶", 64)
+	if len(got) == 0 {
+		t.Fatal("single han character produced no tokens")
+	}
+}

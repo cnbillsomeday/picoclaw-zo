@@ -63,3 +63,42 @@ func TestImportCardsConcurrentAddCard(t *testing.T) {
 		t.Fatalf("cards = %d, want %d (lost writes?)", len(cards), want)
 	}
 }
+
+func TestAddCardClampsImp(t *testing.T) {
+	workspace := t.TempDir()
+	card, _, err := AddCard(workspace, NewCard{Text: "imp clamp card", Imp: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Imp != 1 {
+		t.Fatalf("imp = %v, want 1", card.Imp)
+	}
+}
+
+func TestAddCardIdempotentSameTextAndDay(t *testing.T) {
+	workspace := t.TempDir()
+	first, _, err := AddCard(workspace, NewCard{Text: "same text card", T: "2026-11-03"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := AddCard(workspace, NewCard{Text: "same text card", T: "2026-11-03"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("duplicate created: %s vs %s", first.ID, second.ID)
+	}
+	cards, err := LoadCards(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, c := range cards {
+		if c.ID == first.ID {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("card appears %d times, want 1", n)
+	}
+}

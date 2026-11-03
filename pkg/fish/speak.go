@@ -142,6 +142,10 @@ func LoadSpeakState(workspace string) (SpeakState, error) {
 		return state, err
 	}
 	if err := json.Unmarshal(raw, &state); err != nil {
+		// Corrupt state: back the file up (like ResetMood does) instead of
+		// silently zeroing Misses/LastSpoke, which would drop the cooldown
+		// and streak bonuses and make the fish *more* likely to speak.
+		_ = os.Rename(SpeakStatePath(workspace), SpeakStatePath(workspace)+".corrupt")
 		return SpeakState{}, nil
 	}
 	return state, nil
@@ -237,7 +241,17 @@ func IsPeak(now time.Time, peakHours [][2]int) bool {
 		return false
 	}
 	for _, window := range peakHours {
-		if now.Hour() >= window[0] && now.Hour() < window[1] {
+		start, end := window[0], window[1]
+		if start == end {
+			continue
+		}
+		// A window with start > end wraps midnight (e.g. 22..6 covers
+		// 22:00-23:59 and 00:00-05:59), matching InQuiet semantics.
+		if start < end {
+			if now.Hour() >= start && now.Hour() < end {
+				return true
+			}
+		} else if now.Hour() >= start || now.Hour() < end {
 			return true
 		}
 	}

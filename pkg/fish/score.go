@@ -341,6 +341,12 @@ func tokens(text string, cap int) []string {
 	for i := 0; i+1 < len(han); i++ {
 		out = append(out, string(han[i:i+2]))
 	}
+	if len(han) == 1 {
+		// A single han character cannot form a bigram; emit it as a unigram
+		// so short queries like "茶" still recall instead of silently
+		// returning nothing.
+		out = append(out, string(han[0]))
+	}
 	out = append(out, wordPattern.FindAllString(normalized, -1)...)
 	return out
 }
