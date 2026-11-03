@@ -229,54 +229,60 @@ func ImportCards(workspace, memoryFile string) (added, skipped int, err error) {
 
 	candidates := splitMemoryCards(string(raw))
 
-	seen := make(map[string]struct{}, 128)
-	rows, err := loadRawCards(workspace)
+	// The read-merge-write of cards.jsonl must hold the same cross-process
+	// lock as AddCard: gateway/MCP/CLI write this file concurrently, and an
+	// unlocked full rewrite used to drop cards written in between.
+	err = withCardsLock(workspace, func() error {
+		seen := make(map[string]struct{}, 128)
+		rows, err := loadRawCards(workspace)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			seen[row.ID] = struct{}{}
+		}
+
+		existing := make([]any, 0, len(rows)+len(candidates))
+		for _, row := range rows {
+			existing = append(existing, row)
+		}
+
+		for _, text := range candidates {
+			text = NormalizeText(text)
+			if text == "" {
+				skipped++
+				continue
+			}
+			t := ""
+			if m := dateInText.FindString(text); m != "" {
+				t = m
+			}
+			id := CardID(text, t)
+			if _, ok := seen[id]; ok {
+				skipped++
+				continue
+			}
+			seen[id] = struct{}{}
+
+			existing = append(existing, Card{
+				ID:   id,
+				T:    t,
+				Text: text,
+				Tags: []string{},
+				Imp:  DefaultCardImp,
+				Kind: classifyCard(text),
+				Half: DefaultCardHalf,
+				Src:  "MEMORY.md",
+			})
+			added++
+		}
+
+		if added == 0 {
+			return nil
+		}
+		return writeJSONLines(CardsPath(workspace), existing)
+	})
 	if err != nil {
-		return 0, 0, err
-	}
-	for _, row := range rows {
-		seen[row.ID] = struct{}{}
-	}
-
-	existing := make([]any, 0, len(rows)+len(candidates))
-	for _, row := range rows {
-		existing = append(existing, row)
-	}
-
-	for _, text := range candidates {
-		text = NormalizeText(text)
-		if text == "" {
-			skipped++
-			continue
-		}
-		t := ""
-		if m := dateInText.FindString(text); m != "" {
-			t = m
-		}
-		id := CardID(text, t)
-		if _, ok := seen[id]; ok {
-			skipped++
-			continue
-		}
-		seen[id] = struct{}{}
-
-		existing = append(existing, Card{
-			ID:   id,
-			T:    t,
-			Text: text,
-			Tags: []string{},
-			Imp:  DefaultCardImp,
-			Kind: classifyCard(text),
-			Half: DefaultCardHalf,
-			Src:  "MEMORY.md",
-		})
-		added++
-	}
-
-	if added == 0 {
-		return 0, skipped, nil
-	}
-	if err := writeJSONLines(CardsPath(workspace), existing); err != nil {
 		return 0, 0, err
 	}
 	return added, skipped, nil

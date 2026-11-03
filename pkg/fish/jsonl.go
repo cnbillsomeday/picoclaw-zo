@@ -43,11 +43,23 @@ func writeJSONLines(path string, values []any) error {
 		buf.Write(body)
 		buf.WriteByte('\n')
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
+	// Unique temp name: ImportCards/AddCard may run in other processes that
+	// write the same file; a fixed ".tmp" name would let them clobber each
+	// other's staging file. CreateTemp also gives 0600.
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp.*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.Write(buf.Bytes()); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // scanJSONLines 逐行读 JSON Lines，坏行和空行直接跳过。
