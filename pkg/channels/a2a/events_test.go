@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 )
@@ -231,4 +232,63 @@ func TestPrunePendingByPeer(t *testing.T) {
 		t.Fatal("stale pending entry survived prune")
 	}
 	c.pendMu.Unlock()
+}
+
+// TestQueuedNoticeTTL: a reply-mode notice that sits in the queue longer
+// than queuedNoticeTTL is dropped on flush instead of popping out later on
+// an unrelated send; a fresh notice still publishes.
+func TestQueuedNoticeTTL(t *testing.T) {
+	st, err := loadChannelState(filepath.Join(t.TempDir(), "state.json"), "alice")
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	base := time.Unix(1_700_000_000, 0)
+	now := base
+	c := &Channel{
+		BaseChannel:   channels.NewBaseChannel("a2a", nil, nil, nil),
+		agentSlug:     "alice",
+		state:         st,
+		msgBus:        bus.NewMessageBus(),
+		notifyMode:    "reply",
+		notifyChannel: "telegram",
+		notifyChatID:  "owner-1",
+		now:           func() time.Time { return now },
+	}
+	defer c.msgBus.Close()
+
+	notice := ownerNotice{convID: "c1", msgID: "m1", peer: "bob", status: "completed", reply: "hello", inbound: "hi"}
+
+	// Queue at t=base, then let 20 minutes pass before the flush: the notice
+	// is stale and must be dropped (queue ends empty).
+	c.queueOwnerNotification(notice)
+	now = base.Add(20 * time.Minute)
+	c.notifyReplySent("bob")
+	c.noticeMu.Lock()
+	if n := len(c.queuedNotice); n != 0 {
+		t.Fatalf("stale notice kept in queue: %d", n)
+	}
+	c.noticeMu.Unlock()
+
+	// A fresh notice at t=+20min flushes and reaches the outbound bus.
+	fresh := notice
+	fresh.msgID = "m2"
+	c.queueOwnerNotification(fresh)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case out := <-c.msgBus.OutboundChan():
+			if out.Channel != "telegram" || out.ChatID != "owner-1" {
+				t.Errorf("flush routed to %s/%s", out.Channel, out.ChatID)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("fresh notice never published")
+		}
+	}()
+	c.notifyReplySent("bob")
+	select {
+	case <-done:
+	case <-time.After(6 * time.Second):
+		t.Fatal("timed out waiting for publish goroutine")
+	}
 }

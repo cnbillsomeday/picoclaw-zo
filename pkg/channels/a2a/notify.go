@@ -88,6 +88,14 @@ func (c *Channel) notifyReplySent(peer string) {
 	if !ok {
 		return
 	}
+	if !notice.queuedAt.IsZero() && c.currentTime().Sub(notice.queuedAt) > queuedNoticeTTL {
+		logger.WarnCF("a2a", "dropped stale queued owner notification", map[string]any{
+			"agent":        c.agentSlug,
+			"peer":         peer,
+			"queued_age_s": int(c.currentTime().Sub(notice.queuedAt).Seconds()),
+		})
+		return
+	}
 	c.publishOwnerNotification(notice)
 }
 
@@ -105,6 +113,7 @@ func (c *Channel) queueOwnerNotification(notice ownerNotice) {
 	if c.queuedNotice == nil {
 		c.queuedNotice = map[string]ownerNotice{}
 	}
+	notice.queuedAt = c.currentTime()
 	c.queuedNotice[peer] = notice
 	c.noticeMu.Unlock()
 }
@@ -120,7 +129,16 @@ type ownerNotice struct {
 	reply     string
 	failure   string
 	usage     turnUsage
+
+	// queuedAt bounds how long a reply-mode notice may sit in the queue
+	// waiting for the reply send; stale notices are dropped on flush.
+	queuedAt time.Time
 }
+
+// queuedNoticeTTL caps the lifetime of a queued reply-mode notification.
+// A notice older than this no longer describes anything useful: its turn is
+// long over, and flushing it on an unrelated later send would confuse.
+const queuedNoticeTTL = 10 * time.Minute
 
 func (c *Channel) ownerNotificationsEnabled() bool {
 	return c != nil && !c.dryRun && c.notifyMode != "off" &&
