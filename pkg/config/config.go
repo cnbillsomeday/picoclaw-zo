@@ -1108,7 +1108,37 @@ func (c *ModelConfig) Validate() error {
 	if c.SessionHeader != "" && !httpguts.ValidHeaderFieldName(c.SessionHeader) {
 		return fmt.Errorf("session_header must be a valid HTTP header name")
 	}
+	// Reject reserved/security-relevant headers: a session id must never ride
+	// on a credential or transport header, and must not clash with headers
+	// the providers set themselves.
+	if c.SessionHeader != "" && reservedSessionHeaders[strings.ToLower(c.SessionHeader)] {
+		return fmt.Errorf("session_header %q is a reserved header and cannot be used", c.SessionHeader)
+	}
 	return nil
+}
+
+// reservedSessionHeaders must never carry a per-conversation session id:
+// credential/transport headers would leak it, and the others are set by the
+// providers themselves (a clash would corrupt the request).
+var reservedSessionHeaders = map[string]bool{
+	"authorization":       true,
+	"host":                true,
+	"cookie":              true,
+	"content-length":      true,
+	"content-type":        true,
+	"transfer-encoding":   true,
+	"connection":          true,
+	"accept":              true,
+	"user-agent":          true,
+	"x-api-key":           true,
+	"anthropic-version":   true,
+	"anthropic-beta":      true,
+	"openai-organization": true,
+	"openai-project":      true,
+	"openai-beta":         true,
+	"x-goog-api-key":      true,
+	"proxy-authorization": true,
+	"www-authenticate":    true,
 }
 
 func (c *ModelConfig) SetAPIKey(value string) {

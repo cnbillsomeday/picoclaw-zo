@@ -55,3 +55,26 @@ func TestExpandMultiKeyModelsPreservesSessionHeader(t *testing.T) {
 		}
 	}
 }
+
+func TestModelConfigValidateSessionHeaderReserved(t *testing.T) {
+	reserved := []string{
+		"authorization", "Authorization", "X-API-Key", "Cookie", "Host",
+		"anthropic-version", "content-type", "x-goog-api-key",
+	}
+	for _, h := range reserved {
+		cfg := &ModelConfig{ModelName: "zen", Model: "openai/gpt-5.4", SessionHeader: h}
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("reserved header %q accepted", h)
+		}
+	}
+	// Case-insensitive match must be enforced on the lower-cased name.
+	cfg := &ModelConfig{ModelName: "zen", Model: "openai/gpt-5.4", SessionHeader: "AUTHORIZATION"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("AUTHORIZATION accepted; reserved check must be case-insensitive")
+	}
+	// Normal session headers stay valid.
+	ok := &ModelConfig{ModelName: "zen", Model: "openai/gpt-5.4", SessionHeader: "x-opencode-session"}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("valid header rejected: %v", err)
+	}
+}
