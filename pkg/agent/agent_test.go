@@ -2811,11 +2811,12 @@ func TestProcessMessage_CommandOutcomes(t *testing.T) {
 		},
 		Content: "/new",
 	})
-	if newResp != "LLM reply" {
+	// picoclaw-zo: /new is an alias of /clear, so it is handled without an LLM call.
+	if newResp != "Chat history cleared!" {
 		t.Fatalf("unexpected /new reply: %q", newResp)
 	}
-	if provider.calls != 2 {
-		t.Fatalf("LLM should be called for passthrough /new command, calls=%d", provider.calls)
+	if provider.calls != 1 {
+		t.Fatalf("LLM should not be called for the /new alias, calls=%d", provider.calls)
 	}
 }
 
@@ -7390,15 +7391,25 @@ func TestParallelMessageProcessing_SameSessionProcessedSequentially(t *testing.T
 		al,
 		64,
 		runtimeevents.KindAgentTurnStart,
+		runtimeevents.KindAgentTurnEnd,
 	)
 	defer closeRuntimeEvents()
 
+	// Events reach this collector asynchronously, so the provider being called
+	// does not mean the turn start was recorded yet. Events arrive in publish
+	// order, so once the first turn end is seen every turn start published
+	// before it has been recorded.
+	turnEnded := make(chan struct{})
+	var endOnce sync.Once
 	go func() {
 		for evt := range runtimeCh {
-			if evt.Kind == runtimeevents.KindAgentTurnStart {
+			switch evt.Kind {
+			case runtimeevents.KindAgentTurnStart:
 				mu.Lock()
 				turnIDs[evt.Scope.TurnID] = true
 				mu.Unlock()
+			case runtimeevents.KindAgentTurnEnd:
+				endOnce.Do(func() { close(turnEnded) })
 			}
 		}
 	}()
@@ -7447,6 +7458,12 @@ func TestParallelMessageProcessing_SameSessionProcessedSequentially(t *testing.T
 		// Turn completed successfully
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for turn to complete")
+	}
+
+	select {
+	case <-turnEnded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for turn end event")
 	}
 
 	mu.Lock()

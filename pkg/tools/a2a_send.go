@@ -89,8 +89,8 @@ func (t *A2ASendTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 	if t == nil || t.cfg == nil {
 		return ErrorResult("a2a_send: config is unavailable")
 	}
-	to := wire.NormalizeAgentSlug(stringArg(args, "to"))
-	text := stringArg(args, "text")
+	to := wire.NormalizeAgentSlug(a2aStringArg(args, "to"))
+	text := a2aStringArg(args, "text")
 	if to == "" {
 		return ErrorResult("a2a_send: 'to' is required")
 	}
@@ -265,7 +265,7 @@ func a2aAllowed(bc *config.Channel, slug string) bool {
 	return false
 }
 
-func stringArg(args map[string]any, key string) string {
+func a2aStringArg(args map[string]any, key string) string {
 	value, _ := args[key].(string)
 	return strings.TrimSpace(value)
 }
