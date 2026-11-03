@@ -107,12 +107,30 @@ func FormatAge(hours float64) string {
 	return fmt.Sprintf("%.1f 天前", hours/24)
 }
 
-// LoadMoodConfig 读配置，缺文件或缺字段都回落到默认值。
+// LoadMoodConfig 读配置，缺文件或缺字段都回落到默认值；文件损坏时整体回落
+// 默认（不采用半解析结果），因为半份配置会让衰减/基线行为难以预测。
 func LoadMoodConfig(workspace string) MoodConfig {
 	cfg := DefaultMoodConfig()
 	raw, err := os.ReadFile(MoodConfigPath(workspace))
-	if err == nil {
-		_ = json.Unmarshal(raw, &cfg)
+	if err != nil {
+		return cfg
+	}
+	var parsed MoodConfig
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		// 与 speak.go 的降级保持一致：坏文件整体弃用，不混用半解析值。
+		return DefaultMoodConfig()
+	}
+	if parsed.MoodHalfHours > 0 {
+		cfg.MoodHalfHours = parsed.MoodHalfHours
+	}
+	if parsed.EmoHalfMin > 0 {
+		cfg.EmoHalfMin = parsed.EmoHalfMin
+	}
+	if parsed.Baseline != 0 {
+		cfg.Baseline = parsed.Baseline
+	}
+	if parsed.Floor != 0 {
+		cfg.Floor = parsed.Floor
 	}
 	return cfg
 }
@@ -156,7 +174,14 @@ func ComputeMood(events []MoodEvent, cfg MoodConfig, now time.Time) MoodState {
 
 	state := MoodState{Baseline: cfg.Baseline}
 	for _, e := range events {
-		ageHours := now.Sub(parseMoodTS(e.TS, now)).Hours()
+		ts, tsOK := parseMoodTS(e.TS)
+		if !tsOK {
+			// A corrupt timestamp must not look like "just happened": that
+			// would make the event contribute at full strength forever and
+			// pin the mood at its clamp.
+			continue
+		}
+		ageHours := now.Sub(ts).Hours()
 		if ageHours < 0 {
 			ageHours = 0
 		}
@@ -317,20 +342,20 @@ func emotionRank(name string) int {
 	return len(MoodEmotions)
 }
 
-func parseMoodTS(ts string, fallback time.Time) time.Time {
+func parseMoodTS(ts string) (time.Time, bool) {
 	ts = strings.TrimSpace(ts)
 	if ts == "" {
-		return fallback
+		return time.Time{}, false
 	}
 	if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
-		return parsed
+		return parsed, true
 	}
 	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02"} {
 		if parsed, err := time.ParseInLocation(layout, ts, time.Local); err == nil {
-			return parsed
+			return parsed, true
 		}
 	}
-	return fallback
+	return time.Time{}, false
 }
 
 // formatNum 输出不带多余小数的数字。

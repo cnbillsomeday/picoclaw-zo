@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -226,5 +227,40 @@ func TestMoodConfigFallsBackToDefaults(t *testing.T) {
 	}
 	if cfg.EmoHalfMin != 90 {
 		t.Fatalf("没写的字段应该保持默认：%+v", cfg)
+	}
+}
+
+// TestComputeMoodSkipsCorruptTS: a corrupt-timestamp event used to fall back
+// to "now" and contribute at full strength forever; it must be skipped.
+func TestComputeMoodSkipsCorruptTS(t *testing.T) {
+	cfg := DefaultMoodConfig()
+	now := time.Now()
+	events := []MoodEvent{
+		{TS: "not-a-timestamp", D: 80, Why: "corrupt"},
+	}
+	state := ComputeMood(events, cfg, now)
+	if state.Value != cfg.Baseline {
+		t.Fatalf("value = %v, want baseline %v (corrupt event must not apply)", state.Value, cfg.Baseline)
+	}
+	if state.HasWhy {
+		t.Fatal("corrupt event must not contribute Why/AgeHours either")
+	}
+}
+
+// TestLoadMoodConfigAllOrNothing: a corrupt config file must fall back to
+// the whole default, never a half-parsed mix.
+func TestLoadMoodConfigAllOrNothing(t *testing.T) {
+	workspace := t.TempDir()
+	path := MoodConfigPath(workspace)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"baseline": 60, "mood_half_hours": "oops"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := LoadMoodConfig(workspace)
+	def := DefaultMoodConfig()
+	if cfg != def {
+		t.Fatalf("corrupt config mixed values: %+v, want %+v", cfg, def)
 	}
 }
