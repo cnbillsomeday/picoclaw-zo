@@ -40,7 +40,7 @@ func (c *Channel) pollLoop() {
 			failStreak = 0
 			c.state.SetOK(time.Now(), 0)
 		}
-		if err := c.state.Save(); err != nil {
+		if err := c.state.SaveIfDirty(); err != nil {
 			logger.WarnCF("a2a", "failed to save channel state", map[string]any{
 				"agent": c.agentSlug,
 				"error": err.Error(),

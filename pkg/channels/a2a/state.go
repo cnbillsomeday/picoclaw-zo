@@ -67,6 +67,7 @@ type channelState struct {
 	mu     sync.Mutex
 	saveMu sync.Mutex
 	path   string
+	dirty  bool
 	data   stateData
 }
 
@@ -135,6 +136,7 @@ func (s *channelState) Seen(convID, msgID string) bool {
 func (s *channelState) MarkSeen(convID, msgID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.dirty = true
 	s.addSeenLocked(convID, msgID)
 }
 
@@ -217,6 +219,7 @@ func (s *channelState) pruneLocked() {
 func (s *channelState) MarkNotified(convID, msgID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.dirty = true
 	for _, id := range s.data.Notified[convID] {
 		if id == msgID {
 			return false
@@ -253,6 +256,7 @@ func (s *channelState) pruneNotifiedLocked() {
 func (s *channelState) UnmarkNotified(convID, msgID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.dirty = true
 	ids := s.data.Notified[convID]
 	if len(ids) == 0 {
 		return
@@ -290,6 +294,7 @@ func (s *channelState) RecordOutbound(peer string, now time.Time, window time.Du
 	cutoff := now.Add(-window).Unix()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.dirty = true
 	if s.data.Outbound == nil {
 		s.data.Outbound = map[string][]int64{}
 	}
@@ -332,6 +337,7 @@ func (s *channelState) MarkInboundPending(
 ) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.dirty = true
 	if s.data.Inbound == nil {
 		s.data.Inbound = map[string]map[string]*inboundEntry{}
 	}
@@ -358,6 +364,7 @@ func (s *channelState) MarkInboundPending(
 func (s *channelState) MarkInboundFailed(convID, msgID string, now time.Time, retryAfter time.Duration, errText string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.dirty = true
 	entry := s.inboundLocked(convID, msgID)
 	entry.Status = "failed"
 	entry.LastAttempt = now.Unix()
@@ -369,6 +376,7 @@ func (s *channelState) MarkInboundFailed(convID, msgID string, now time.Time, re
 func (s *channelState) MarkInboundDead(convID, msgID string, now time.Time, errText string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.dirty = true
 	entry := s.inboundLocked(convID, msgID)
 	entry.Status = "dead"
 	entry.LastAttempt = now.Unix()
@@ -395,6 +403,7 @@ func (s *channelState) inboundLocked(convID, msgID string) *inboundEntry {
 func (s *channelState) ClearInbound(convID, msgID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.dirty = true
 	if convs := s.data.Inbound[convID]; convs != nil {
 		delete(convs, msgID)
 		if len(convs) == 0 {
@@ -582,6 +591,7 @@ func (s *channelState) ETag() string {
 func (s *channelState) SetETag(etag string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.dirty = true
 	if etag != "" {
 		s.data.ETag = etag
 	}
@@ -591,6 +601,7 @@ func (s *channelState) SetTick(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data.LastTickAt = now.UTC().Format(time.RFC3339)
+	s.dirty = true
 }
 
 func (s *channelState) SetOK(now time.Time, failStreak int) {
@@ -598,12 +609,28 @@ func (s *channelState) SetOK(now time.Time, failStreak int) {
 	defer s.mu.Unlock()
 	s.data.LastOKAt = now.UTC().Format(time.RFC3339)
 	s.data.FailStreak = failStreak
+	s.dirty = true
 }
 
 func (s *channelState) SetFail(failStreak int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data.FailStreak = failStreak
+	s.dirty = true
+}
+
+// SaveIfDirty persists only when something changed since the last save.
+// On an embedded box (SD card) the old behaviour rewrote the whole file
+// every poll even for a pure tick; callers that only bumped LastTick now
+// skip the write entirely.
+func (s *channelState) SaveIfDirty() error {
+	s.mu.Lock()
+	dirty := s.dirty
+	s.mu.Unlock()
+	if !dirty {
+		return nil
+	}
+	return s.Save()
 }
 
 func (s *channelState) Save() error {
@@ -644,5 +671,11 @@ func (s *channelState) Save() error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, s.path)
+	if err := os.Rename(tmpName, s.path); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.dirty = false
+	s.mu.Unlock()
+	return nil
 }

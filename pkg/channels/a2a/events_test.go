@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -290,5 +291,49 @@ func TestQueuedNoticeTTL(t *testing.T) {
 	case <-done:
 	case <-time.After(6 * time.Second):
 		t.Fatal("timed out waiting for publish goroutine")
+	}
+}
+
+// TestSaveIfDirtySkipsUnchanged: a bare SetTick marks dirty (tick is a real
+// change), but Save clears the flag so an unchanged second save skips the
+// disk write.
+func TestSaveIfDirtySkipsUnchanged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := loadChannelState(path, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	st.SetTick(now)
+	if err := st.SaveIfDirty(); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	first, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another tick-less save: nothing changed, must not rewrite the file.
+	time.Sleep(10 * time.Millisecond)
+	if err := st.SaveIfDirty(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.ModTime().Equal(first.ModTime()) {
+		t.Fatal("unchanged state was rewritten to disk")
+	}
+	// A real change (MarkSeen) makes the next SaveIfDirty write again.
+	st.MarkSeen("c1", "m1")
+	if err := st.SaveIfDirty(); err != nil {
+		t.Fatal(err)
+	}
+	third, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.ModTime().Equal(first.ModTime()) {
+		t.Fatal("dirty state was not written")
 	}
 }
