@@ -5,15 +5,12 @@ package api
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
-
-	"rsc.io/qr"
 
 	"github.com/sipeed/picoclaw/pkg/channels/weixin"
 	"github.com/sipeed/picoclaw/pkg/config"
@@ -248,17 +245,6 @@ func (h *Handler) saveWeixinBinding(token, accountID string) error {
 		})
 	}
 	return nil
-}
-
-// generateQRDataURI encodes content as a QR code PNG and returns a data URI.
-func generateQRDataURI(content string) (string, error) {
-	code, err := qr.Encode(content, qr.L)
-	if err != nil {
-		return "", fmt.Errorf("qr encode: %w", err)
-	}
-	pngBytes := code.PNG()
-	encoded := base64.StdEncoding.EncodeToString(pngBytes)
-	return "data:image/png;base64," + encoded, nil
 }
 
 func newWeixinFlowID() string {
