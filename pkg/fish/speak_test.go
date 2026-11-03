@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -343,4 +344,51 @@ func mustReadFile(t *testing.T, path string) []byte {
 		t.Fatalf("读文件失败 %s：%v", path, err)
 	}
 	return raw
+}
+
+// TestSpeakStateConcurrentTouchAndEvaluate: TouchInbound (fishhook process)
+// and EvaluateSpeak (cron process) hammer the same state.json; with the
+// speak-state lock every TouchInbound write must survive (no lost updates),
+// and the lock file must be cleaned up.
+func TestSpeakStateConcurrentTouchAndEvaluate(t *testing.T) {
+	workspace := t.TempDir()
+	const touchers = 3
+	const touchesEach = 20
+
+	var wg sync.WaitGroup
+	for g := 0; g < touchers; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < touchesEach; i++ {
+				at := time.Now().Add(time.Duration(g*1000+i) * time.Millisecond)
+				if err := TouchInbound(workspace, at); err != nil {
+					t.Errorf("TouchInbound: %v", err)
+				}
+			}
+		}(g)
+	}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			EvaluateSpeak(workspace) // dry_run default: rolls and records, must not error
+		}()
+	}
+	wg.Wait()
+
+	state, err := LoadSpeakState(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// evaluateSpeak ran 20 times; Ticks must reflect every roll exactly.
+	if state.Ticks != 20 {
+		t.Fatalf("Ticks = %d, want 20 (lost updates)", state.Ticks)
+	}
+	if state.LastInbound == "" {
+		t.Fatal("LastInbound lost (all TouchInbound writes clobbered)")
+	}
+	if _, err := os.Stat(SpeakStatePath(workspace) + ".lock"); !os.IsNotExist(err) {
+		t.Fatal("speak state lock file left behind")
+	}
 }

@@ -147,6 +147,37 @@ func LoadSpeakState(workspace string) (SpeakState, error) {
 	return state, nil
 }
 
+// withSpeakStateLock serialises read-modify-write of state.json across
+// processes: fishhook's TouchInbound (every inbound message) and cron's
+// EvaluateSpeak (dice rolls) run concurrently, and an unlocked load-modify-
+// save used to lose updates in both directions.
+func withSpeakStateLock(workspace string, fn func() error) error {
+	lockPath := SpeakStatePath(workspace) + ".lock"
+	if err := ensureDir(dirOf(lockPath)); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_ = f.Close()
+			defer func() { _ = os.Remove(lockPath) }()
+			return fn()
+		}
+		if !os.IsExist(err) {
+			return err
+		}
+		if st, statErr := os.Stat(lockPath); statErr == nil && time.Since(st.ModTime()) > 60*time.Second {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("fish: timed out waiting for speak state lock %s", lockPath)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // SaveSpeakState 写状态。
 func SaveSpeakState(workspace string, state SpeakState) error {
 	path := SpeakStatePath(workspace)
@@ -157,17 +188,35 @@ func SaveSpeakState(workspace string, state SpeakState) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(body, '\n'), 0o644)
+	// Atomic replace + 0600: state carries last-spoke/last-inbound times,
+	// which is personal-rhythm data; and a crash mid-write must not leave a
+	// half file behind.
+	tmp, err := os.CreateTemp(dirOf(path), filepath.Base(path)+".tmp.*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.Write(append(body, '\n')); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // TouchInbound 记下「他最近说过话」的时间。
 func TouchInbound(workspace string, at time.Time) error {
-	state, err := LoadSpeakState(workspace)
-	if err != nil {
-		return err
-	}
-	state.LastInbound = at.Format(time.RFC3339)
-	return SaveSpeakState(workspace, state)
+	return withSpeakStateLock(workspace, func() error {
+		state, err := LoadSpeakState(workspace)
+		if err != nil {
+			return err
+		}
+		state.LastInbound = at.Format(time.RFC3339)
+		return SaveSpeakState(workspace, state)
+	})
 }
 
 // InQuiet 判断小时是否落在安静时段（含起不含止，起===止表示不启用，支持跨午夜）。
@@ -217,30 +266,42 @@ func EvaluateSpeak(workspace string) SpeakPlan {
 }
 
 func evaluateSpeak(workspace string, now time.Time, roll float64) SpeakPlan {
-	cfg, err := LoadSpeakConfig(workspace)
-	if err != nil {
-		return SpeakPlan{Decision: SpeakDecisionIdle, Reason: err.Error()}
-	}
-	state, err := LoadSpeakState(workspace)
-	if err != nil {
-		return SpeakPlan{Decision: SpeakDecisionIdle, Reason: err.Error()}
-	}
+	var plan SpeakPlan
+	// The load-plan-mutate-save cycle must be atomic against TouchInbound
+	// writers in other processes; the speak log line is written outside the
+	// lock because it is append-only.
+	err := withSpeakStateLock(workspace, func() error {
+		cfg, err := LoadSpeakConfig(workspace)
+		if err != nil {
+			plan = SpeakPlan{Decision: SpeakDecisionIdle, Reason: err.Error()}
+			return nil
+		}
+		state, err := LoadSpeakState(workspace)
+		if err != nil {
+			plan = SpeakPlan{Decision: SpeakDecisionIdle, Reason: err.Error()}
+			return nil
+		}
 
-	plan := planSpeak(cfg, state, now, roll)
+		plan = planSpeak(cfg, state, now, roll)
 
-	state.Ticks++
-	switch plan.Decision {
-	case SpeakDecisionIdle:
-	case SpeakDecisionMissed:
-		state.Misses++
-		state.LastRoll = now.Format(time.RFC3339)
-	default: // dry_run / sent 都算「掷中」
-		state.Misses = 0
-		state.LastRoll = now.Format(time.RFC3339)
-		state.LastSpoke = now.Format(time.RFC3339)
+		state.Ticks++
+		switch plan.Decision {
+		case SpeakDecisionIdle:
+		case SpeakDecisionMissed:
+			state.Misses++
+			state.LastRoll = now.Format(time.RFC3339)
+		default: // dry_run / sent 都算「掷中」
+			state.Misses = 0
+			state.LastRoll = now.Format(time.RFC3339)
+			state.LastSpoke = now.Format(time.RFC3339)
+		}
+		// 状态写失败不该影响判定结果，但账本仍然照记。
+		_ = SaveSpeakState(workspace, state)
+		return nil
+	})
+	if err != nil {
+		plan = SpeakPlan{Decision: SpeakDecisionIdle, Reason: err.Error()}
 	}
-	// 状态写失败不该影响判定结果，但账本仍然照记。
-	_ = SaveSpeakState(workspace, state)
 	_ = appendJSONLine(SpeakLogPath(workspace), speakLogEntry{
 		TS:        now.Format(time.RFC3339),
 		Decision:  plan.Decision,
