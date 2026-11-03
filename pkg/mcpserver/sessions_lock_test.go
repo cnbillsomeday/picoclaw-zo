@@ -174,3 +174,39 @@ func TestBearerParsingStrict(t *testing.T) {
 		}
 	}
 }
+
+// TestAppendContentVerbatim: transcript content must be stored exactly as
+// sent; trimming whitespace is batch-3 regression behavior.
+func TestAppendContentVerbatim(t *testing.T) {
+	workspace := t.TempDir()
+	meta, err := BeginSession(workspace, "agent", "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := "  padded line with trailing spaces   "
+	if _, err := AppendMessages(workspace, "agent", meta.ID, []TranscriptMessage{
+		{Role: "user", Content: raw},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, lines, err := ReadSession(workspace, "agent", meta.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || lines[0].Content != raw {
+		t.Fatalf("content altered: %q", lines[0].Content)
+	}
+}
+
+// TestNewSessionIDUniqueness: ids carry 8 random bytes; 1000 ids generated
+// in the same second must all differ.
+func TestNewSessionIDUniqueness(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 1000; i++ {
+		id := newSessionID()
+		if seen[id] {
+			t.Fatalf("duplicate session id %q at i=%d", id, i)
+		}
+		seen[id] = true
+	}
+}

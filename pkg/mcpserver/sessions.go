@@ -59,7 +59,9 @@ func sanitizeName(s string) string {
 }
 
 func newSessionID() string {
-	var buf [4]byte
+	// 8 random bytes (was 4): a same-second collision would silently
+	// overwrite an existing session dir.
+	var buf [8]byte
 	_, _ = rand.Read(buf[:])
 	return time.Now().UTC().Format("20060102-150405") + "-" + hex.EncodeToString(buf[:])
 }

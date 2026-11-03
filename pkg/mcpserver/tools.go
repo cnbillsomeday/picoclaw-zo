@@ -37,6 +37,13 @@ func argString(args map[string]any, key string) string {
 	return strings.TrimSpace(v)
 }
 
+// argStringRaw returns the value without trimming: content fields must be
+// stored verbatim (leading/trailing whitespace is part of the transcript).
+func argStringRaw(args map[string]any, key string) string {
+	v, _ := args[key].(string)
+	return v
+}
+
 func argInt(args map[string]any, key string) int {
 	switch v := args[key].(type) {
 	case float64:
@@ -288,7 +295,7 @@ func (s *Server) toolSessionAppend(ctx context.Context, _ *mcp.CallToolRequest, 
 		}
 		msgs = append(msgs, TranscriptMessage{
 			Role:    argString(m, "role"),
-			Content: argString(m, "content"),
+			Content: argStringRaw(m, "content"),
 			Name:    argString(m, "name"),
 			TS:      argString(m, "ts"),
 		})
@@ -315,7 +322,7 @@ func (s *Server) toolRemember(ctx context.Context, _ *mcp.CallToolRequest, args 
 		return errResult("agent %q is not allowed to write memory", agent.Name)
 	}
 	card, replaced, err := fish.AddCard(s.workspace, fish.NewCard{
-		Text: argString(args, "text"),
+		Text: argStringRaw(args, "text"),
 		Key:  argString(args, "key"),
 		Kind: argString(args, "kind"),
 		Tags: argStrings(args, "tags"),
