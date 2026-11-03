@@ -62,8 +62,13 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		header := r.Header.Get("Authorization")
-		token, _ := strings.CutPrefix(header, "Bearer")
-		agent, ok := s.cfg.AgentByToken(strings.TrimSpace(token))
+		token, hasScheme := strings.CutPrefix(header, "Bearer ")
+		// Require the canonical "Bearer <token>" form: "Bearer<token>" or a
+		// bare token must not authenticate.
+		agent, ok := Agent{}, false
+		if hasScheme {
+			agent, ok = s.cfg.AgentByTokenConstantTime(strings.TrimSpace(token))
+		}
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

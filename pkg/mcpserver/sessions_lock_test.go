@@ -2,6 +2,8 @@ package mcpserver
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"sync"
 	"testing"
@@ -127,5 +129,48 @@ func TestLoadConfigRejectsDotNames(t *testing.T) {
 	write("ok-agent")
 	if _, err := LoadConfig(dir); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
+	}
+}
+
+// TestBearerParsingStrict: the authenticate middleware must require the
+// canonical "Bearer <token>" form (space mandatory); "Bearer<token>" and a
+// bare token must 401. Verified end-to-end over httptest through the real
+// Handler so the middleware wiring is covered too.
+func TestBearerParsingStrict(t *testing.T) {
+	cfg := Config{
+		Host: "127.0.0.1", Port: 0,
+		Agents: []Agent{{Name: "agent", Token: "secret-token"}},
+	}
+	srv := &Server{cfg: cfg}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	cases := []struct {
+		name   string
+		header string
+		want   int
+	}{
+		{"no header", "", http.StatusUnauthorized},
+		{"bare token", "secret-token", http.StatusUnauthorized},
+		{"no space", "Bearersecret-token", http.StatusUnauthorized},
+		{"wrong token", "Bearer nope", http.StatusUnauthorized},
+		// Authenticated GET is rejected by the MCP protocol layer itself
+		// (400), which proves the request passed auth.
+		{"valid", "Bearer secret-token", http.StatusBadRequest},
+		{"valid padded", "Bearer  secret-token", http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/mcp", nil)
+		if tc.header != "" {
+			req.Header.Set("Authorization", tc.header)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("%s: status = %d, want %d", tc.name, resp.StatusCode, tc.want)
+		}
 	}
 }

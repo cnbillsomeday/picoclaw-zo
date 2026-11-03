@@ -4,6 +4,7 @@
 package mcpserver
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -98,6 +99,29 @@ func LoadConfig(workspace string) (Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// AgentByTokenConstantTime resolves a Bearer token to its agent without
+// leaking token prefix length through early-exit string comparison.
+func (c Config) AgentByTokenConstantTime(token string) (Agent, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return Agent{}, false
+	}
+	var found Agent
+	ok := false
+	// Accumulate a per-candidate match flag over a constant walk: every
+	// candidate is examined exactly once regardless of input.
+	for _, a := range c.Agents {
+		match := subtle.ConstantTimeCompare([]byte(a.Token), []byte(token)) == 1
+		if match && !ok {
+			found, ok = a, true
+		}
+	}
+	if !ok {
+		return Agent{}, false
+	}
+	return found, true
 }
 
 // AgentByToken resolves a Bearer token to its agent.
