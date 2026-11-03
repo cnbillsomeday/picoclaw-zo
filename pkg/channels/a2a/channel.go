@@ -103,7 +103,7 @@ type Channel struct {
 	pendingByPeer map[string]pendingInbound
 
 	usageMu     sync.Mutex
-	usageByTurn map[string]*turnUsage
+	usageByTurn map[string]turnUsageEntry
 
 	noticeMu     sync.Mutex
 	queuedNotice map[string]ownerNotice

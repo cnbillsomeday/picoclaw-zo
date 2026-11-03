@@ -12,6 +12,13 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
+// turnUsageEntry accumulates one turn's token usage; `at` bounds how long a
+// lost turn.end may leave the entry in memory.
+type turnUsageEntry struct {
+	usage turnUsage
+	at    time.Time
+}
+
 // pendingInbound is one delivered message waiting for its turn to finish.
 type pendingInbound struct {
 	peer      string
@@ -69,7 +76,9 @@ func (c *Channel) handleRuntimeEvent(_ context.Context, evt runtimeevents.Event)
 	if c == nil {
 		return nil
 	}
-	if evt.Scope.Channel != "" && c.BaseChannel != nil && !strings.EqualFold(evt.Scope.Channel, c.Name()) {
+	// Strict scope match: a turn.end with an empty Channel scope (cron jobs,
+	// fish speak-up turns, CLI turns) must never settle an A2A inbound.
+	if c.BaseChannel != nil && !strings.EqualFold(evt.Scope.Channel, c.Name()) {
 		return nil
 	}
 	switch evt.Kind {
@@ -88,21 +97,47 @@ func (c *Channel) recordLLMUsage(turnID string, payload any) {
 	if c == nil {
 		return
 	}
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		// Untracked turn (e.g. a proactive cron turn): aggregating under ""
+		// would leak memory because no turn.end can ever consume it.
+		return
+	}
 	in := payloadIntField(payload, "TokensIn")
 	out := payloadIntField(payload, "TokensOut")
+	now := c.currentTime()
 	c.usageMu.Lock()
 	defer c.usageMu.Unlock()
 	if c.usageByTurn == nil {
-		c.usageByTurn = map[string]*turnUsage{}
+		c.usageByTurn = map[string]turnUsageEntry{}
 	}
-	u := c.usageByTurn[turnID]
-	if u == nil {
-		u = &turnUsage{}
-		c.usageByTurn[turnID] = u
+	entry := c.usageByTurn[turnID]
+	entry.usage.TokensIn += in
+	entry.usage.TokensOut += out
+	entry.usage.LLMCalls++
+	if entry.at.IsZero() {
+		entry.at = now
 	}
-	u.TokensIn += in
-	u.TokensOut += out
-	u.LLMCalls++
+	c.usageByTurn[turnID] = entry
+	c.gcTurnUsageLocked(now)
+}
+
+// gcTurnUsageLocked drops usage entries whose turn ended (or was lost) long
+// ago; without this a missed turn.end leaks the entry for the channel's
+// lifetime.
+func (c *Channel) gcTurnUsageLocked(now time.Time) {
+	ttl := c.inboundTimeout
+	if ttl <= 0 {
+		ttl = 5 * time.Minute
+	}
+	// Keep generous headroom above the turn timeout so a slow turn that
+	// eventually ends still finds its usage.
+	ttl *= 2
+	for turnID, entry := range c.usageByTurn {
+		if now.Sub(entry.at) > ttl {
+			delete(c.usageByTurn, turnID)
+		}
+	}
 }
 
 func (c *Channel) takeTurnUsage(turnID string) turnUsage {
@@ -111,13 +146,12 @@ func (c *Channel) takeTurnUsage(turnID string) turnUsage {
 	}
 	c.usageMu.Lock()
 	defer c.usageMu.Unlock()
-	u := c.usageByTurn[turnID]
-	if u == nil {
+	entry, ok := c.usageByTurn[turnID]
+	if !ok {
 		return turnUsage{}
 	}
-	out := *u
 	delete(c.usageByTurn, turnID)
-	return out
+	return entry.usage
 }
 
 func (c *Channel) handleTurnEndEvent(evt runtimeevents.Event) {
@@ -153,6 +187,25 @@ func (c *Channel) handleTurnEndEvent(evt runtimeevents.Event) {
 		result.Error = "turn ended with status " + status
 	}
 	c.handleInboundResult(pending.convID, peer, pending.msgID, pending.attempt, result)
+}
+
+// prunePendingByPeer drops in-memory pending entries whose state entry is no
+// longer "pending" (settled, retried or expired). The poller expires stale
+// state entries via ExpirePendingInbound but that never touched this map, so
+// a lost turn.end used to leave the entry here until the peer's next message
+// overwrote it.
+func (c *Channel) prunePendingByPeer() {
+	if c == nil || c.state == nil {
+		return
+	}
+	c.pendMu.Lock()
+	defer c.pendMu.Unlock()
+	for peer, p := range c.pendingByPeer {
+		entry := c.state.InboundEntry(p.convID, p.msgID)
+		if entry == nil || entry.Status != "pending" {
+			delete(c.pendingByPeer, peer)
+		}
+	}
 }
 
 func (c *Channel) solePendingPeer() string {

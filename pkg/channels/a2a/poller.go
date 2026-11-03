@@ -66,6 +66,7 @@ func (c *Channel) pollOnce(ctx context.Context) error {
 		return err
 	}
 	c.state.SetTick(now)
+	c.prunePendingByPeer()
 	c.refreshPeersIfDue(ctx)
 
 	if notModified {
