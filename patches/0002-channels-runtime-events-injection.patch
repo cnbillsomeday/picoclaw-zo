@@ -1,18 +1,27 @@
-diff --git a/pkg/channels/manager.go b/pkg/channels/manager.go
-index 16b88ad2..b5304369 100644
---- a/pkg/channels/manager.go
-+++ b/pkg/channels/manager.go
-@@ -1004,6 +1004,13 @@ func (m *Manager) initChannel(typeName, channelName string) {
- 			"error":   err.Error(),
- 		})
- 	} else {
-+		// Inject the runtime event bus into channels that opt in (additive hook;
-+		// the A2A channel uses it for wake summaries and turn settlement).
-+		if m.runtimeEvents != nil {
-+			if setter, ok := ch.(interface{ SetRuntimeEvents(runtimeevents.Bus) }); ok {
-+				setter.SetRuntimeEvents(m.runtimeEvents)
-+			}
-+		}
- 		// Inject MediaStore if channel supports it
- 		if m.mediaStore != nil {
- 			if setter, ok := ch.(mediaStoreSetter); ok {
+补丁 0002：渠道运行时事件总线注入（现状说明）
+
+> 原始 diff 已随 bd359fe4 重构并入 main（attachRuntimeEvents），本文件改为
+> 记录该补丁点的**当前形态**，供上游 rebase 冲突时对照。
+
+当前实现（pkg/channels/manager.go）：
+
+    func (m *Manager) attachRuntimeEvents(channel Channel) {
+        if m.runtimeEvents == nil || channel == nil {
+            return
+        }
+        if setter, ok := channel.(interface {
+            SetRuntimeEvents(runtimeevents.Bus)
+        }); ok {
+            setter.SetRuntimeEvents(m.runtimeEvents)
+        }
+    }
+
+调用点（两处，均在 channel.Start 之前）：
+- Manager.StartAll 的启动循环
+- 单渠道重建/热加载路径
+
+行为：实现 `SetRuntimeEvents(runtimeevents.Bus)` 的渠道在启动前拿到事件总线；
+A2A 渠道依赖它订阅 agent.turn.end / agent.llm.response 做消息结算与唤醒小结。
+
+rebase 提示：若上游改动 StartAll/initChannel，冲突时保留 attachRuntimeEvents
+调用即可；函数本身无上游依赖，可整体迁移。
