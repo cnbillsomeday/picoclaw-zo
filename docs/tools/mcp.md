@@ -1,3 +1,6 @@
+---
+description: "The MCP tool enables integration with external Model Context Protocol servers."
+---
 # MCP tools
 
 The MCP tool enables integration with external Model Context Protocol servers. Every tool exposed by a connected server becomes an individual agent tool named `mcp_<server>_<tool>`; the components are sanitized into valid identifiers, and a short hash suffix keeps names distinct (and within the 64-character API limit) when sanitization or truncation would collide.
@@ -12,6 +15,8 @@ If you prefer not to edit JSON manually, PicoClaw also provides an MCP configura
 - `picoclaw mcp edit` — open `config.json` in `$EDITOR` for advanced edits
 
 These commands manage the same `tools.mcp.servers` section documented below. See [MCP Server CLI](../reference/mcp-cli.md) for command syntax, examples, and behavior details.
+
+The web dashboard also provides an MCP page with a **Servers** tab for adding, editing, and monitoring configured stdio/SSE/HTTP servers, a **Catalog** tab with one-click presets for popular servers, and a **Settings** tab for the global MCP integration and tool discovery options. Presets that require credentials prompt for them during installation.
 
 ## Tool Discovery (Lazy Loading)
 

@@ -1,3 +1,6 @@
+---
+description: "Web tools: web_search and web_fetch, the separate config switches for each, and how the results are shaped for the model."
+---
 # Web tools
 
 Web tools are used for web search and fetching. They are two tools with separate switches:
@@ -230,6 +233,8 @@ At runtime, the `web_search` tool accepts the following parameters:
 
 If `range` is omitted, PicoClaw performs an unrestricted search.
 For Kagi, `d`, `w`, and `m` map to Kagi lens `time_relative`; `y` maps to a lens `time_after` date one year before the current day.
+
+Search results are normalized before they are returned: runs of blank lines in provider snippets are collapsed to a single newline, so repeated hard wraps cannot bloat the result layout or its large-result artifact. Single line breaks, tabs, indentation, and markdown structure are preserved.
 
 ## Example `web_search` Call
 

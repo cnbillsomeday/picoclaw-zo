@@ -20,6 +20,36 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
+func TestReplaysReasoningContent(t *testing.T) {
+	tests := []struct {
+		name         string
+		providerName string
+		apiBase      string
+		want         bool
+	}{
+		{
+			name:         "opencode-go strips",
+			providerName: "opencode-go",
+			apiBase:      "https://opencode.ai/inference/go/openai/v1",
+			want:         false,
+		},
+		{name: "openai strips", providerName: "openai", apiBase: "https://api.openai.com/v1", want: false},
+		{name: "deepseek replays", providerName: "deepseek", apiBase: "https://api.deepseek.com", want: true},
+		{name: "deepseek host replays", providerName: "", apiBase: "https://api.deepseek.com/v1", want: true},
+		{name: "mimo replays", providerName: "mimo", apiBase: "https://api.xiaomimimo.com", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewProvider("key", tt.apiBase, "")
+			p.SetProviderName(tt.providerName)
+			if got := p.ReplaysReasoningContent(); got != tt.want {
+				t.Fatalf("ReplaysReasoningContent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOpenAIProviderUsesResponsesAPI(t *testing.T) {
 	var requestBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1261,6 +1291,36 @@ func TestProviderChat_LargeHTMLResponsePreviewIsTruncated(t *testing.T) {
 	}
 }
 
+func TestBuildRequestBody_OmitsTemperatureForTemperatureDeprecatedModels(t *testing.T) {
+	p := NewProvider("key", "http://example.invalid", "")
+	for _, model := range []string{
+		"claude-sonnet-5-5",
+		"claude-sonnet-5.5",
+		"anthropic/claude-sonnet-5-5",
+		"claude-haiku-5-5",
+	} {
+		t.Run(model, func(t *testing.T) {
+			body := p.buildRequestBody(nil, nil, model, map[string]any{"temperature": 0.7})
+			if _, ok := body["temperature"]; ok {
+				t.Fatalf("temperature must be omitted for %s", model)
+			}
+
+			responsesBody := p.responsesRequestBody(nil, nil, model, map[string]any{"temperature": 0.7})
+			if _, ok := responsesBody["temperature"]; ok {
+				t.Fatalf("responses temperature must be omitted for %s", model)
+			}
+		})
+	}
+}
+
+func TestBuildRequestBody_KeepsTemperatureForSupportedModel(t *testing.T) {
+	p := NewProvider("key", "http://example.invalid", "")
+	body := p.buildRequestBody(nil, nil, "claude-sonnet-4-6", map[string]any{"temperature": 0.7})
+	if got := body["temperature"]; got != 0.7 {
+		t.Fatalf("temperature = %v, want 0.7", got)
+	}
+}
+
 func TestProviderChat_StripsMoonshotPrefixAndNormalizesKimiTemperature(t *testing.T) {
 	var requestBody map[string]any
 
@@ -1497,6 +1557,41 @@ func TestNormalizeModel_UsesAPIBase(t *testing.T) {
 	}
 }
 
+func TestProviderChat_NVIDIAPreservesNamespacedModelID(t *testing.T) {
+	const modelID = "nvidia/nemotron-3.5-super-vl-120b-a12b"
+	var requestBody map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	p := NewProvider("key", server.URL, "")
+	p.SetProviderName("nvidia")
+	if _, err := p.Chat(
+		t.Context(),
+		[]Message{{Role: "user", Content: "hi"}},
+		nil,
+		modelID,
+		map[string]any{"max_tokens": 16},
+	); err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+
+	if got, _ := requestBody["model"].(string); got != modelID {
+		t.Fatalf("request model = %q, want %q", got, modelID)
+	}
+}
+
 func TestProvider_RequestTimeoutDefault(t *testing.T) {
 	p := NewProviderWithMaxTokensFieldAndTimeout("key", "https://example.com/v1", "", "", 0)
 	if p.httpClient.Timeout != defaultRequestTimeout {
@@ -1593,6 +1688,146 @@ func TestProviderChat_ExtraBodyOverridesOptions(t *testing.T) {
 	if got := requestBody["temperature"]; got != float64(0.9) {
 		t.Fatalf("temperature = %v, want 0.9 (from extraBody, overriding options)", got)
 	}
+}
+
+func TestBuildRequestBody_OpenRouterProviderSort(t *testing.T) {
+	t.Run("applies to openrouter host", func(t *testing.T) {
+		p := NewProvider(
+			"key",
+			"https://openrouter.ai/api/v1",
+			"",
+			WithProviderSort("throughput"),
+		)
+
+		body := p.buildRequestBody(
+			[]Message{{Role: "user", Content: "hi"}},
+			nil,
+			"openai/gpt-4o",
+			nil,
+		)
+
+		provider, ok := body["provider"].(map[string]any)
+		if !ok {
+			t.Fatalf("provider = %#v, want map", body["provider"])
+		}
+		if got := provider["sort"]; got != "throughput" {
+			t.Fatalf("provider.sort = %#v, want throughput", got)
+		}
+	})
+
+	t.Run("applies to openrouter provider name with custom host", func(t *testing.T) {
+		p := NewProvider("key", "https://gateway.example.com/v1", "", WithProviderSort("latency"))
+		p.SetProviderName("openrouter")
+
+		body := p.buildRequestBody(
+			[]Message{{Role: "user", Content: "hi"}},
+			nil,
+			"openai/gpt-4o",
+			nil,
+		)
+
+		provider, ok := body["provider"].(map[string]any)
+		if !ok {
+			t.Fatalf("provider = %#v, want map", body["provider"])
+		}
+		if got := provider["sort"]; got != "latency" {
+			t.Fatalf("provider.sort = %#v, want latency", got)
+		}
+	})
+
+	t.Run("ignored for other providers", func(t *testing.T) {
+		p := NewProvider("key", "https://api.example.com/v1", "", WithProviderSort("price"))
+		p.SetProviderName("openai")
+
+		body := p.buildRequestBody(
+			[]Message{{Role: "user", Content: "hi"}},
+			nil,
+			"gpt-4o",
+			nil,
+		)
+
+		if _, ok := body["provider"]; ok {
+			t.Fatalf("provider = %#v, want omitted", body["provider"])
+		}
+	})
+
+	t.Run("merges with extra body provider routing", func(t *testing.T) {
+		extraBody := map[string]any{
+			"provider": map[string]any{"order": []any{"openai", "azure"}},
+		}
+		p := NewProvider(
+			"key",
+			"https://openrouter.ai/api/v1",
+			"",
+			WithExtraBody(extraBody),
+			WithProviderSort("price"),
+		)
+
+		body := p.buildRequestBody(
+			[]Message{{Role: "user", Content: "hi"}},
+			nil,
+			"openai/gpt-4o",
+			nil,
+		)
+
+		provider, ok := body["provider"].(map[string]any)
+		if !ok {
+			t.Fatalf("provider = %#v, want map", body["provider"])
+		}
+		if got := provider["sort"]; got != "price" {
+			t.Fatalf("provider.sort = %#v, want price", got)
+		}
+		if _, ok := provider["order"]; !ok {
+			t.Fatalf("provider.order missing from merged provider config: %#v", provider)
+		}
+
+		configuredProvider := extraBody["provider"].(map[string]any)
+		if _, mutated := configuredProvider["sort"]; mutated {
+			t.Fatalf("extra_body provider map was mutated: %#v", configuredProvider)
+		}
+	})
+
+	t.Run("extra body sort wins", func(t *testing.T) {
+		p := NewProvider(
+			"key",
+			"https://openrouter.ai/api/v1",
+			"",
+			WithExtraBody(map[string]any{
+				"provider": map[string]any{"sort": "price"},
+			}),
+			WithProviderSort("throughput"),
+		)
+
+		body := p.buildRequestBody(
+			[]Message{{Role: "user", Content: "hi"}},
+			nil,
+			"openai/gpt-4o",
+			nil,
+		)
+
+		provider, ok := body["provider"].(map[string]any)
+		if !ok {
+			t.Fatalf("provider = %#v, want map", body["provider"])
+		}
+		if got := provider["sort"]; got != "price" {
+			t.Fatalf("provider.sort = %#v, want explicit extra_body price", got)
+		}
+	})
+
+	t.Run("invalid sort is ignored", func(t *testing.T) {
+		p := NewProvider("key", "https://openrouter.ai/api/v1", "", WithProviderSort("fastest"))
+
+		body := p.buildRequestBody(
+			[]Message{{Role: "user", Content: "hi"}},
+			nil,
+			"openai/gpt-4o",
+			nil,
+		)
+
+		if _, ok := body["provider"]; ok {
+			t.Fatalf("provider = %#v, want omitted for invalid sort", body["provider"])
+		}
+	})
 }
 
 func TestProviderChat_CustomHeadersInjected(t *testing.T) {

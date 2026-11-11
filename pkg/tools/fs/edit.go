@@ -1,6 +1,7 @@
 package fstools
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,10 +10,11 @@ import (
 	"strings"
 )
 
-// EditFileTool edits a file by replacing old_text with new_text.
-// The old_text must exist exactly in the file.
+// EditFileTool edits a file by replacing old_text with new_text, or by
+// applying a V4A patch. The old_text must exist exactly in the file.
 type EditFileTool struct {
-	fs fileSystem
+	fs        fileSystem
+	workspace string
 }
 
 // NewEditFileTool creates a new EditFileTool with optional directory restriction.
@@ -21,7 +23,7 @@ func NewEditFileTool(workspace string, restrict bool, allowPaths ...[]*regexp.Re
 	if len(allowPaths) > 0 {
 		patterns = allowPaths[0]
 	}
-	return &EditFileTool{fs: buildFs(workspace, restrict, patterns)}
+	return &EditFileTool{fs: buildFs(workspace, restrict, patterns), workspace: workspace}
 }
 
 func (t *EditFileTool) Name() string {
@@ -29,7 +31,11 @@ func (t *EditFileTool) Name() string {
 }
 
 func (t *EditFileTool) Description() string {
-	return "Edit a file by replacing old_text with new_text. The old_text must exist exactly in the file. Standard JSON escaping applies: \\n for newline and \\\\n for literal backslash-n."
+	return "Edit a file by replacing old_text with new_text, or by applying a V4A patch through patch. " +
+		"The old_text must exist exactly in the file. Prefer patch for multi-hunk edits: it accepts " +
+		"'*** Begin Patch' / '*** End Patch' with an optional '*** Update File: <path>' header, and hunk lines " +
+		"starting with ' ' (context), '-' (remove), or '+' (add). Hunks may be given in any order and each needs at least one context or removed line; a hunk with no context appends at end of file when it ends with '*** End of File'. Provide either patch or old_text/new_text, not both. " +
+		"Standard JSON escaping applies: \\n for newline and \\\\n for literal backslash-n."
 }
 
 func (t *EditFileTool) Parameters() map[string]any {
@@ -42,14 +48,23 @@ func (t *EditFileTool) Parameters() map[string]any {
 			},
 			"old_text": map[string]any{
 				"type":        "string",
-				"description": "The exact text to find and replace. Standard JSON escaping applies: \\n for newline and \\\\n for literal backslash-n.",
+				"description": "The exact text to find and replace. Required when patch is not provided. Standard JSON escaping applies: \\n for newline and \\\\n for literal backslash-n.",
 			},
 			"new_text": map[string]any{
 				"type":        "string",
-				"description": "The text to replace with. Standard JSON escaping applies: \\n for newline and \\\\n for literal backslash-n.",
+				"description": "The text to replace with. Required when patch is not provided. Standard JSON escaping applies: \\n for newline and \\\\n for literal backslash-n.",
+			},
+			"patch": map[string]any{
+				"type": "string",
+				"description": "A V4A patch for this file: optional \"*** Begin Patch\" / \"*** End Patch\" wrapper, " +
+					"an optional \"*** Update File: <path>\" header, then hunks whose lines start with ' ' (context), " +
+					"'-' (remove), or '+' (add). '@@' starts a hunk and \"*** End of File\" anchors the last hunk to EOF, " +
+					"or appends a hunk without context at EOF. Each hunk needs a context or removed line, unless it ends with \"*** End of File\" to append; " +
+					"the context must match exactly once, and hunks may be given in any order. A line containing a single space is an empty context line; blank lines before a closing directive are ignored. " +
+					"Use instead of old_text/new_text.",
 			},
 		},
-		"required": []string{"path", "old_text", "new_text"},
+		"required": []string{"path"},
 	}
 }
 
@@ -57,6 +72,29 @@ func (t *EditFileTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	path, ok := args["path"].(string)
 	if !ok {
 		return ErrorResult("path is required")
+	}
+
+	patchRaw, hasPatch := args["patch"]
+	if hasPatch {
+		patchText, isString := patchRaw.(string)
+		if !isString {
+			return ErrorResult("patch must be a string")
+		}
+		if strings.TrimSpace(patchText) == "" {
+			return ErrorResult("patch is empty")
+		}
+		if _, hasOld := args["old_text"]; hasOld {
+			return ErrorResult("provide either patch or old_text/new_text, not both")
+		}
+		if _, hasNew := args["new_text"]; hasNew {
+			return ErrorResult("provide either patch or old_text/new_text, not both")
+		}
+
+		beforeContent, afterContent, err := editFileWithPatch(t.fs, path, patchText)
+		if err != nil {
+			return ErrorResult(fmt.Sprintf("patch failed: %v", err))
+		}
+		return DiffResult(path, beforeContent, afterContent)
 	}
 
 	oldText, ok := args["old_text"].(string)
@@ -77,7 +115,8 @@ func (t *EditFileTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 }
 
 type AppendFileTool struct {
-	fs fileSystem
+	fs        fileSystem
+	workspace string
 }
 
 func NewAppendFileTool(workspace string, restrict bool, allowPaths ...[]*regexp.Regexp) *AppendFileTool {
@@ -85,7 +124,7 @@ func NewAppendFileTool(workspace string, restrict bool, allowPaths ...[]*regexp.
 	if len(allowPaths) > 0 {
 		patterns = allowPaths[0]
 	}
-	return &AppendFileTool{fs: buildFs(workspace, restrict, patterns)}
+	return &AppendFileTool{fs: buildFs(workspace, restrict, patterns), workspace: workspace}
 }
 
 func (t *AppendFileTool) Name() string {
@@ -128,6 +167,28 @@ func (t *AppendFileTool) Execute(ctx context.Context, args map[string]any) *Tool
 		return ErrorResult(err.Error())
 	}
 	return SilentResult(fmt.Sprintf("Appended to %s", path))
+}
+
+// editFileWithPatch reads the file via sysFs, applies a V4A patch, and writes
+// back only when the content changed.
+func editFileWithPatch(sysFs fileSystem, path, patch string) ([]byte, []byte, error) {
+	content, err := sysFs.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	newContent, err := applyV4APatch(content, patch, path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if bytes.Equal(content, newContent) {
+		return content, newContent, nil
+	}
+
+	if err := sysFs.WriteFile(path, newContent); err != nil {
+		return nil, nil, err
+	}
+	return content, newContent, nil
 }
 
 // editFile reads the file via sysFs, performs the replacement, and writes back.

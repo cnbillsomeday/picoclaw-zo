@@ -1,10 +1,13 @@
+---
+description: "Steering allows injecting messages into an already-running agent loop, interrupting it between tool calls without waiting for the entire cycle to complete."
+---
 # Steering
 
 Steering allows injecting messages into an already-running agent loop, interrupting it between tool calls without waiting for the entire cycle to complete.
 
 ## How it works
 
-When the agent is executing a sequence of tool calls (e.g. the model requested 3 tools in a single turn), steering checks the queue **after each tool** completes. If it finds queued messages:
+When the agent is executing a sequence of tool calls (e.g. the model requested 3 tools in a single turn), steering checks the queue **after each tool** completes (after the whole segment when [parallel tool calls](parallel-tool-calls.md) are enabled and the tools ran concurrently). If it finds queued messages:
 
 1. The remaining tools are **skipped** and receive `"Skipped due to queued user message."` as their result
 2. The steering messages are **injected into the conversation context**

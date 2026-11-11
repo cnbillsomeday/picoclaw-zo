@@ -290,44 +290,18 @@ func (e *Engine) Ingest(ctx context.Context, sessionKey string, messages []Messa
 		return nil, fmt.Errorf("get conversation: %w", err)
 	}
 
+	// Insert the batch and append it to the context in the same transaction per
+	// chunk (see AddMessagesBatch): a commit per message, plus one for the
+	// context append, is the dominant cost with the pure-Go sqlite driver on
+	// low-end hardware. The adapter ingests one message at a time, so the hot
+	// path goes from two commits to one; bootstrap passes the remaining history
+	// and gets one commit per IngestBatchChunkSize messages instead of N+1.
 	var totalTokens int
-	var msgIDs []int64
 	for _, msg := range messages {
-		var added *Message
-		var err error
-		if len(msg.Parts) > 0 {
-			added, err = e.store.AddMessageWithPartsAndReasoning(
-				ctx,
-				conv.ConversationID,
-				msg.Role,
-				msg.Parts,
-				msg.ModelName,
-				msg.ReasoningContent,
-				msg.TokenCount,
-				msg.CreatedAt,
-			)
-		} else {
-			added, err = e.store.AddMessageWithReasoning(
-				ctx,
-				conv.ConversationID,
-				msg.Role,
-				msg.Content,
-				msg.ModelName,
-				msg.ReasoningContent,
-				msg.TokenCount,
-				msg.CreatedAt,
-			)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("add message: %w", err)
-		}
 		totalTokens += msg.TokenCount
-		msgIDs = append(msgIDs, added.ID)
 	}
-
-	// Append to context_items using actual inserted IDs
-	if err := e.store.AppendContextMessages(ctx, conv.ConversationID, msgIDs); err != nil {
-		return nil, fmt.Errorf("append context: %w", err)
+	if _, err := e.store.AddMessagesBatch(ctx, conv.ConversationID, messages); err != nil {
+		return nil, fmt.Errorf("add messages: %w", err)
 	}
 
 	logger.InfoCF("seahorse", "ingest", map[string]any{
@@ -390,7 +364,12 @@ func (e *Engine) Compact(ctx context.Context, sessionKey string, input CompactIn
 
 // CompactNow synchronously compacts a session on user request (/compact).
 // instructions (may be empty) tells the summarizer which details to prioritize.
-func (e *Engine) CompactNow(ctx context.Context, sessionKey, instructions string) (*CompactResult, error) {
+func (e *Engine) CompactNow(
+	ctx context.Context,
+	sessionKey string,
+	instructions string,
+	protectTailMessages ...int,
+) (*CompactResult, error) {
 	if e.shouldIgnoreSession(sessionKey) || e.isStatelessSession(sessionKey) {
 		return &CompactResult{}, nil
 	}
@@ -401,12 +380,17 @@ func (e *Engine) CompactNow(ctx context.Context, sessionKey, instructions string
 	}
 
 	e.initCompactionOnce()
-	return e.compaction.CompactNow(ctx, conv.ConversationID, instructions)
+	return e.compaction.CompactNow(ctx, conv.ConversationID, instructions, protectTailMessages...)
 }
 
 // CompactUntilUnder aggressively compacts until context is under budget.
 // Used for emergency compaction after LLM overflow (retry reason).
-func (e *Engine) CompactUntilUnder(ctx context.Context, sessionKey string, budget int) (*CompactResult, error) {
+func (e *Engine) CompactUntilUnder(
+	ctx context.Context,
+	sessionKey string,
+	budget int,
+	protectTailMessages ...int,
+) (*CompactResult, error) {
 	if e.shouldIgnoreSession(sessionKey) || e.isStatelessSession(sessionKey) {
 		return &CompactResult{}, nil
 	}
@@ -417,7 +401,7 @@ func (e *Engine) CompactUntilUnder(ctx context.Context, sessionKey string, budge
 	}
 
 	e.initCompactionOnce()
-	return e.compaction.CompactUntilUnder(ctx, conv.ConversationID, budget)
+	return e.compaction.CompactUntilUnder(ctx, conv.ConversationID, budget, protectTailMessages...)
 }
 
 // initCompactionOnce lazily initializes the compaction engine.

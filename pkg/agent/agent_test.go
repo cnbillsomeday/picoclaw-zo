@@ -436,6 +436,83 @@ func TestPublishResponseIfNeeded_MarksFinalOutbound(t *testing.T) {
 	}
 }
 
+func TestPublishResponseIfNeeded_IncludesMatchingAssistantUsage(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+	sessionKey := session.BuildMainSessionKey(agent.ID)
+	usage := &providers.UsageInfo{
+		PromptTokens:        120,
+		CompletionTokens:    30,
+		TotalTokens:         150,
+		CacheReadTokens:     20,
+		CacheCreationTokens: 10,
+		CostUSD:             0.0123,
+	}
+	if err := agent.Sessions.AddFullMessage(context.Background(), sessionKey, providers.Message{
+		Role:    "assistant",
+		Content: "final reply",
+		Usage:   usage,
+	}); err != nil {
+		t.Fatalf("AddFullMessage() error = %v", err)
+	}
+
+	al.PublishResponseIfNeeded(context.Background(), "pico", "pico:"+sessionKey, sessionKey, "final reply")
+
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if outbound.Usage == nil {
+			t.Fatal("expected outbound usage")
+		}
+		want := bus.TokenUsage{
+			InputTokens:         120,
+			OutputTokens:        30,
+			TotalTokens:         150,
+			CacheReadTokens:     20,
+			CacheCreationTokens: 10,
+			CostUSD:             0.0123,
+		}
+		if *outbound.Usage != want {
+			t.Fatalf("outbound usage = %+v, want %+v", *outbound.Usage, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected final outbound")
+	}
+}
+
+func TestPublishResponseIfNeeded_OmitsUsageForDifferentResponse(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+	sessionKey := session.BuildMainSessionKey(agent.ID)
+	if err := agent.Sessions.AddFullMessage(context.Background(), sessionKey, providers.Message{
+		Role:    "assistant",
+		Content: "final reply",
+		Usage:   &providers.UsageInfo{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+	}); err != nil {
+		t.Fatalf("AddFullMessage() error = %v", err)
+	}
+
+	al.PublishResponseIfNeeded(context.Background(), "pico", "pico:"+sessionKey, sessionKey, "Stopped.")
+
+	select {
+	case outbound := <-msgBus.OutboundChan():
+		if outbound.Usage != nil {
+			t.Fatalf("outbound usage = %+v, want nil", *outbound.Usage)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected final outbound")
+	}
+}
+
 func TestPublishPicoReasoningIncludesSessionKey(t *testing.T) {
 	al, _, msgBus, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()
@@ -2802,6 +2879,23 @@ func TestProcessMessage_CommandOutcomes(t *testing.T) {
 		t.Fatalf("LLM should be called exactly once after /foo passthrough, calls=%d", provider.calls)
 	}
 
+	unknownResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  baseMsg.Context.Channel,
+			ChatID:   baseMsg.Context.ChatID,
+			ChatType: baseMsg.Context.ChatType,
+			SenderID: baseMsg.Context.SenderID,
+		},
+		Content: "/unknowncommand",
+	})
+	if unknownResp != "LLM reply" {
+		t.Fatalf("unexpected /unknowncommand reply: %q", unknownResp)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("LLM should be called for passthrough /unknowncommand command, calls=%d", provider.calls)
+	}
+
+	// picoclaw-zo: /new is an alias of /clear, so it is handled without an LLM call.
 	newResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
 		Context: bus.InboundContext{
 			Channel:  baseMsg.Context.Channel,
@@ -2811,11 +2905,10 @@ func TestProcessMessage_CommandOutcomes(t *testing.T) {
 		},
 		Content: "/new",
 	})
-	// picoclaw-zo: /new is an alias of /clear, so it is handled without an LLM call.
 	if newResp != "Chat history cleared!" {
 		t.Fatalf("unexpected /new reply: %q", newResp)
 	}
-	if provider.calls != 1 {
+	if provider.calls != 2 {
 		t.Fatalf("LLM should not be called for the /new alias, calls=%d", provider.calls)
 	}
 }

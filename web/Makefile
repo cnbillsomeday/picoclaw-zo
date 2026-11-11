@@ -196,6 +196,7 @@ endif
 test:
 	cd $(BACKEND_DIR) && ${WEB_GO} test ./...
 	cd $(FRONTEND_DIR) && pnpm lint
+	cd $(FRONTEND_DIR) && pnpm test
 
 # Lint and format
 lint:

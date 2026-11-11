@@ -438,6 +438,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 					todo.ClearSession(agent.ID, opts.SessionKey)
 				}
 			}
+			agent.ContextBuilder.ForgetMemorySnapshot(opts.SessionKey)
 			return nil
 		}
 
@@ -453,10 +454,11 @@ func (al *AgentLoop) buildCommandsRuntime(
 				opts.Dispatch.SessionAliases,
 			)
 			err := al.contextManager.Compact(ctx, &CompactRequest{
-				SessionKey:   opts.SessionKey,
-				Reason:       ContextCompressReasonManual,
-				Budget:       agent.ContextWindow,
-				Instructions: focus,
+				SessionKey:         opts.SessionKey,
+				Reason:             ContextCompressReasonManual,
+				Budget:             agent.ContextWindow,
+				ActiveTurnMessages: al.activeTurnMessageCountForSession(opts.SessionKey),
+				Instructions:       focus,
 			})
 			if errors.Is(err, ErrNothingToCompact) {
 				return false, nil

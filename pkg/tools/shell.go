@@ -25,20 +25,33 @@ import (
 	"github.com/sipeed/picoclaw/pkg/isolation"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	fstools "github.com/sipeed/picoclaw/pkg/tools/fs"
-	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
 
-// maxOutputBufferSize caps the output captured per session; outputTruncateMarker
-// is appended once the cap is reached.
-const (
-	maxOutputBufferSize  = 1 * 1024 * 1024 // 1MB
-	outputTruncateMarker = "\n... [output truncated, exceeded 1MB]\n"
-)
+// maxOutputBufferSize caps the rolling output retained per session.
+const maxOutputBufferSize = 1 * 1024 * 1024 // 1MB
 
 var (
 	globalSessionManager = NewSessionManager()
 	sessionManagerMu     sync.RWMutex
 )
+
+func findShellExecutable() (string, error) {
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, "sh")
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+			continue
+		}
+		absolute, err := filepath.Abs(candidate)
+		if err == nil {
+			return absolute, nil
+		}
+	}
+	return "", fmt.Errorf("could not find executable sh in PATH")
+}
 
 func getSessionManager() *SessionManager {
 	sessionManagerMu.RLock()
@@ -47,17 +60,20 @@ func getSessionManager() *SessionManager {
 }
 
 type ExecTool struct {
-	workingDir          string
-	timeout             time.Duration
-	denyPatterns        []*regexp.Regexp
-	allowPatterns       []*regexp.Regexp
-	customAllowPatterns []*regexp.Regexp
-	allowedPathPatterns []*regexp.Regexp
-	restrictToWorkspace bool
-	allowRemote         bool
-	maxOutputChars      int
-	sessionManager      *SessionManager
+	workingDir           string
+	timeout              time.Duration
+	denyPatterns         []*regexp.Regexp
+	allowPatterns        []*regexp.Regexp
+	customAllowPatterns  []*regexp.Regexp
+	allowedPathPatterns  []*regexp.Regexp
+	restrictToWorkspace  bool
+	allowRemote          bool
+	maxOutputChars       int
+	maxInlineResultChars int
+	sessionManager       *SessionManager
 }
+
+var _ AsyncExecutor = (*ExecTool)(nil)
 
 var (
 	defaultDenyPatterns = []*regexp.Regexp{
@@ -210,21 +226,24 @@ func NewExecToolWithConfig(
 	}
 
 	maxOutputChars := config.DefaultExecMaxOutputChars
+	maxInlineResultChars := 0
 	if cfg != nil {
 		maxOutputChars = cfg.Tools.Exec.GetMaxOutputChars()
+		maxInlineResultChars = cfg.Tools.GetMaxInlineResultChars()
 	}
 
 	return &ExecTool{
-		workingDir:          workingDir,
-		timeout:             timeout,
-		denyPatterns:        denyPatterns,
-		allowPatterns:       nil,
-		customAllowPatterns: customAllowPatterns,
-		allowedPathPatterns: allowedPathPatterns,
-		restrictToWorkspace: restrict,
-		allowRemote:         allowRemote,
-		maxOutputChars:      maxOutputChars,
-		sessionManager:      getSessionManager(),
+		workingDir:           workingDir,
+		timeout:              timeout,
+		denyPatterns:         denyPatterns,
+		allowPatterns:        nil,
+		customAllowPatterns:  customAllowPatterns,
+		allowedPathPatterns:  allowedPathPatterns,
+		restrictToWorkspace:  restrict,
+		allowRemote:          allowRemote,
+		maxOutputChars:       maxOutputChars,
+		maxInlineResultChars: maxInlineResultChars,
+		sessionManager:       getSessionManager(),
 	}, nil
 }
 
@@ -260,7 +279,7 @@ Before a command explicitly creates files or directories, use list_dir when avai
 Usage notes:
 - action is required; command is required for action=run.
 - The optional timeout parameter is in seconds and overrides the configured timeout for foreground commands; 0 disables the timeout. It cannot be combined with background=true. Foreground output longer than the configured limit (default 50,000 chars) is truncated to the first 40%% and last 60%% around an omission notice; background session output is limited to 1 MB.
-- Use background=true for long-running commands. The result includes a sessionId. Use action=list to list sessions; use poll, wait, read, write, send-keys, or kill with sessionId to manage one. poll returns immediately; to wait for a session to finish use wait instead of polling in a loop. write sends stdin; send-keys sends keys to a PTY. Sessions are cleaned up 30 minutes after the process exits.
+- Use background=true for long-running commands. The result includes a sessionId. Use action=list to list sessions; use poll, wait, read, write, send-keys, or kill with sessionId to manage one. poll returns immediately with a short output preview. read is non-destructive and accepts offset/limit byte ranges; by default it returns the most recent output. wait returns a partial output tail when its window expires. kill returns the final tail and keeps the session readable for 30 minutes. To wait for a session to finish use wait instead of polling in a loop. write sends stdin; send-keys sends keys to a PTY. Set notify=true for a job that ends so its completion arrives as a follow-up message; after two silent poll/wait calls the tool enables that notification automatically.
 - Combine background=true with pty=true for interactive sessions when supported. PTY is not supported on Windows.
 - Run independent commands in separate tool calls. %s Use semicolons only when later commands may run even if an earlier one fails. Do not use newlines to separate commands; newlines inside quoted strings are fine.`, runtime.GOOS, shell, chainGuidance)
 }
@@ -308,9 +327,31 @@ func (t *ExecTool) Parameters() map[string]any {
 				"type":        "integer",
 				"description": "Optional timeout in seconds for foreground commands; overrides the configured timeout, and 0 disables the timeout. Not supported with background=true. For wait: maximum seconds to block (default and cap: the configured timeout).",
 			},
+			"notify": map[string]any{
+				"type":        "boolean",
+				"description": "With background=true, send a completion message when the process exits. Use it for jobs with a defined end; do not poll or wait in a loop.",
+			},
+			"offset": map[string]any{
+				"type":        "integer",
+				"description": "With read: absolute byte offset into the retained session log. Defaults to the start of the most recent limit bytes; use 0 for the oldest retained byte.",
+			},
+			"limit": map[string]any{
+				"type":        "integer",
+				"description": "With read: maximum bytes to return. Defaults to the configured foreground output cap.",
+			},
 		},
 		"required": []string{"action"},
 	}
+}
+
+func boolArg(args map[string]any, key string) bool {
+	switch v := args[key].(type) {
+	case bool:
+		return v
+	case string:
+		return v == "true"
+	}
+	return false
 }
 
 func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
@@ -341,6 +382,57 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult
 	}
 }
 
+// ExecuteAsync installs the completion callback for background runs. The
+// callback is stored even when notify is false so repeated silent poll/wait
+// calls can promote the session to notify-on-complete later.
+func (t *ExecTool) ExecuteAsync(
+	ctx context.Context,
+	args map[string]any,
+	cb AsyncCallback,
+) *ToolResult {
+	result := t.Execute(ctx, args)
+	if result == nil || result.IsError || cb == nil {
+		return result
+	}
+	if action, _ := args["action"].(string); action != "run" || !boolArg(args, "background") {
+		return result
+	}
+
+	var resp ExecResponse
+	if err := json.Unmarshal([]byte(result.ForLLM), &resp); err != nil || resp.SessionID == "" {
+		return result
+	}
+	session, err := t.sessionManager.Get(resp.SessionID)
+	if err != nil {
+		return result
+	}
+	session.SetCompletion(func() {
+		cb(context.Background(), t.completionResult(session))
+	})
+	if boolArg(args, "notify") && session.StartNotify() {
+		// Only advertise the notification after the watcher is armed. Direct
+		// Execute calls have no callback, so they must not promise one.
+		resp.Note = notifyEnabledNote
+		if data, err := json.Marshal(resp); err == nil {
+			result.ForLLM = string(data)
+		}
+	}
+	return result
+}
+
+func (t *ExecTool) completionResult(session *ProcessSession) *ToolResult {
+	status := session.GetStatus()
+	output := session.Tail(completionOutputChars)
+	msg := fmt.Sprintf(
+		"Background command completed.\nsessionId: %s\ncommand: %s\nstatus: %s\nexitCode: %d",
+		session.ID, session.Command, status, session.GetExitCode(),
+	)
+	if output != "" {
+		msg += "\n\nOutput tail:\n" + output
+	}
+	return NewToolResult(msg)
+}
+
 func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolResult {
 	command, ok := args["command"].(string)
 	if !ok {
@@ -360,17 +452,9 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 		}
 	}
 
-	getBoolArg := func(key string) bool {
-		switch v := args[key].(type) {
-		case bool:
-			return v
-		case string:
-			return v == "true"
-		}
-		return false
-	}
-	isPty := getBoolArg("pty")
-	isBackground := getBoolArg("background")
+	isPty := boolArg(args, "pty")
+	isBackground := boolArg(args, "background")
+	notify := boolArg(args, "notify")
 	timeout := t.timeout
 	if raw, ok := args["timeout"]; ok {
 		const maxTimeoutSeconds = (1<<63 - 1) / int64(time.Second)
@@ -391,6 +475,10 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 		if runtime.GOOS == "windows" {
 			return ErrorResult("PTY is not supported on Windows. Use background=true without pty.")
 		}
+	}
+
+	if notify && !isBackground {
+		return ErrorResult("notify is only supported with background=true")
 	}
 
 	cwd := t.workingDir
@@ -462,7 +550,11 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string, timeout tim
 	if runtime.GOOS == "windows" {
 		cmd = exec.CommandContext(cmdCtx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
 	} else {
-		cmd = exec.CommandContext(cmdCtx, "sh", "-c", command)
+		shellPath, err := findShellExecutable()
+		if err != nil {
+			return ErrorResult(fmt.Sprintf("failed to locate shell: %v", err))
+		}
+		cmd = exec.CommandContext(cmdCtx, shellPath, "-c", command)
 	}
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -470,15 +562,46 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string, timeout tim
 
 	prepareCommandForTermination(cmd)
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	maxOutputChars := t.maxOutputChars
+	if maxOutputChars <= 0 {
+		maxOutputChars = config.DefaultExecMaxOutputChars
+	}
+	// The inline view also respects the global tool-result cap. The artifact
+	// keeps the full stream, so a smaller in-memory window does not lose the
+	// omitted middle.
+	if t.maxInlineResultChars > 0 && t.maxInlineResultChars < maxOutputChars {
+		maxOutputChars = t.maxInlineResultChars
+	}
+	collector := newBoundedOutput(maxOutputChars, t.outputSpillDir())
+
+	// stdout and stderr share one pipe so the result preserves the order in
+	// which the child wrote them and a large stderr stream cannot block a
+	// separate pipe reader.
+	outputReader, outputWriter, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		return ErrorResult(fmt.Sprintf("failed to create output pipe: %v", pipeErr))
+	}
+	cmd.Stdout = outputWriter
+	cmd.Stderr = outputWriter
 
 	// Route shell execution through the shared isolation entry point so exec tool
 	// subprocesses receive the same isolation policy as other integrations.
 	if err := isolation.Start(cmd); err != nil {
+		_ = outputWriter.Close()
+		_ = outputReader.Close()
 		return ErrorResult(fmt.Sprintf("failed to start command: %v", err))
 	}
+
+	// The child inherited its own copy of the write end. Release the parent's
+	// copy so the reader observes EOF when the child exits.
+	_ = outputWriter.Close()
+
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		_, _ = io.Copy(collector, outputReader)
+		_ = outputReader.Close()
+	}()
 
 	done := make(chan error, 1)
 	go func() {
@@ -510,10 +633,20 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string, timeout tim
 		}
 	}
 
-	output := stdout.String()
-	if stderr.Len() > 0 {
-		output += "\nSTDERR:\n" + stderr.String()
+	// Drain the merged stream. A surviving grandchild can keep the write end
+	// open after the direct child exits, so bound the wait instead of hanging
+	// the tool call.
+	select {
+	case <-readDone:
+	case <-time.After(2 * time.Second):
+		_ = outputReader.Close()
+		<-readDone
 	}
+
+	output, truncated := collector.Render()
+	artifactPath := collector.SpillPath()
+	spillCapped := collector.SpillCapped()
+	_ = collector.Close()
 
 	if err != nil {
 		if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
@@ -521,12 +654,9 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string, timeout tim
 			if output != "" {
 				msg += "\n\nPartial output before timeout:\n" + output
 			}
-			return &ToolResult{
-				ForLLM:  msg,
-				ForUser: msg,
-				IsError: true,
-				Err:     fmt.Errorf("command timeout: %w", err),
-			}
+			return newExecResult(
+				msg, true, fmt.Errorf("command timeout: %w", err), truncated, artifactPath, spillCapped,
+			)
 		}
 
 		// Extract detailed exit information
@@ -548,36 +678,48 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string, timeout tim
 		output = "(no output)"
 	}
 
-	maxOutputChars := t.maxOutputChars
-	if maxOutputChars <= 0 {
-		maxOutputChars = config.DefaultExecMaxOutputChars
-	}
-	fullOutput := output
-	output, truncated := toolshared.TruncateHeadTail(output, maxOutputChars, "OUTPUT")
+	return newExecResult(output, err != nil, nil, truncated, artifactPath, spillCapped)
+}
 
-	// Attach the pre-truncation output so the large-result spill can save it
-	// instead of the cut view: the omitted middle stays readable from the
-	// artifact whenever the result is large enough to spill.
-	fullText := ""
+func newExecResult(
+	forLLM string,
+	isError bool,
+	err error,
+	truncated bool,
+	artifactPath string,
+	spillCapped bool,
+) *ToolResult {
+	result := &ToolResult{
+		ForLLM:  forLLM,
+		ForUser: forLLM,
+		IsError: isError,
+		Err:     err,
+	}
 	if truncated {
-		fullText = fullOutput
+		// The tool already reduced the output to a bounded view. Prevent the
+		// generic large-result spill from persisting that view as if it were
+		// the full payload.
+		result.LargeResultSpilled = true
 	}
+	if artifactPath != "" {
+		result.ArtifactTags = append(result.ArtifactTags, "[file:"+artifactPath+"]")
+	}
+	if spillCapped {
+		note := fmt.Sprintf(
+			"\n\n[Full output artifact capped at %s bytes]",
+			formatCount64(maxOutputSpillBytes),
+		)
+		result.ForLLM += note
+		result.ForUser += note
+	}
+	return result
+}
 
-	if err != nil {
-		return &ToolResult{
-			ForLLM:   output,
-			ForUser:  output,
-			IsError:  true,
-			FullText: fullText,
-		}
+func (t *ExecTool) outputSpillDir() string {
+	if t.workingDir == "" {
+		return ""
 	}
-
-	return &ToolResult{
-		ForLLM:   output,
-		ForUser:  output,
-		IsError:  false,
-		FullText: fullText,
-	}
+	return filepath.Join(t.workingDir, ".artifacts", "tool")
 }
 
 func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEnabled bool) *ToolResult {
@@ -600,7 +742,11 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", command)
 	} else {
-		cmd = exec.Command("sh", "-c", command)
+		shellPath, err := findShellExecutable()
+		if err != nil {
+			return ErrorResult(fmt.Sprintf("failed to locate shell: %v", err))
+		}
+		cmd = exec.Command(shellPath, "-c", command)
 	}
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -608,8 +754,8 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 
 	prepareCommandForTermination(cmd)
 
-	var stdoutReader io.ReadCloser
-	var stderrReader io.ReadCloser
+	var outputReader io.ReadCloser
+	var outputWriter *os.File
 	var stdinWriter io.WriteCloser
 	var ptySlave *os.File
 
@@ -631,25 +777,31 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 		ptySlave = tty
 	} else {
 		var err error
-		stdoutReader, err = cmd.StdoutPipe()
+		outputReader, outputWriter, err = os.Pipe()
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("failed to create stdout pipe: %v", err))
+			return ErrorResult(fmt.Sprintf("failed to create output pipe: %v", err))
 		}
-		stderrReader, err = cmd.StderrPipe()
-		if err != nil {
-			return ErrorResult(fmt.Sprintf("failed to create stderr pipe: %v", err))
-		}
+		cmd.Stdout = outputWriter
+		cmd.Stderr = outputWriter
 		stdinWriter, err = cmd.StdinPipe()
 		if err != nil {
+			_ = outputReader.Close()
+			_ = outputWriter.Close()
 			return ErrorResult(fmt.Sprintf("failed to create stdin pipe: %v", err))
 		}
-		session.stdoutPipe = io.MultiReader(stdoutReader, stderrReader)
+		session.stdoutPipe = outputReader
 		session.stdinWriter = stdinWriter
 	}
 
 	// Background sessions use the same startup path so isolation stays consistent
 	// with synchronous exec runs.
 	if err := isolation.Start(cmd); err != nil {
+		if outputReader != nil {
+			_ = outputReader.Close()
+		}
+		if outputWriter != nil {
+			_ = outputWriter.Close()
+		}
 		if ptySlave != nil {
 			_ = ptySlave.Close()
 		}
@@ -659,9 +811,12 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 		return ErrorResult(fmt.Sprintf("failed to start command: %v", err))
 	}
 
-	// The child inherited its own copies of the PTY slave end. The parent must
-	// release its copy now, otherwise the master never observes EOF/EIO when
-	// the child exits and the reader goroutine would block forever.
+	// The child inherited its own copies of the pipe/PTY write ends. The parent
+	// must release its copy now, otherwise the readers never observe EOF/EIO
+	// when the child exits and the goroutines would block forever.
+	if outputWriter != nil {
+		_ = outputWriter.Close()
+	}
 	if ptySlave != nil {
 		_ = ptySlave.Close()
 	}
@@ -681,18 +836,15 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 							"panic": fmt.Sprintf("%v", r),
 							"stack": string(debug.Stack()),
 						})
-					session.mu.Lock()
-					session.Status = "error"
-					session.mu.Unlock()
+					session.finish(-1)
 				}
 			}()
 			cmd.Wait() // Wait for process to exit
-			session.mu.Lock()
+			exitCode := -1
 			if cmd.ProcessState != nil {
-				session.ExitCode = cmd.ProcessState.ExitCode()
+				exitCode = cmd.ProcessState.ExitCode()
 			}
-			session.Status = "done"
-			session.mu.Unlock()
+			session.finish(exitCode)
 		}()
 
 		go func() {
@@ -714,16 +866,7 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 						session.SetPtyKeyMode(mode)
 					}
 
-					session.mu.Lock()
-					if session.outputBuffer.Len() >= maxOutputBufferSize {
-						if !session.outputTruncated {
-							session.outputBuffer.WriteString(outputTruncateMarker)
-							session.outputTruncated = true
-						}
-					} else {
-						session.outputBuffer.Write(buf[:n])
-					}
-					session.mu.Unlock()
+					session.appendOutput(buf[:n])
 				}
 				if err != nil {
 					break
@@ -734,9 +877,8 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 			_ = session.ptyMaster.Close()
 		}()
 	} else {
-		// Non-PTY mode: single goroutine reads pipes.
-		// When Read() returns EOF (pipe closed), we break.
-		// When process exits, OS closes pipe write end → Read() returns EOF → we exit.
+		// Non-PTY mode: one goroutine reads the merged stdout/stderr pipe.
+		// When process exits, OS closes the pipe write end → Read() returns EOF.
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -749,58 +891,27 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 			}()
 			buf := make([]byte, 4096)
 
-			// Read stdout
 			for {
-				n, err := stdoutReader.Read(buf)
+				n, err := outputReader.Read(buf)
 				if n > 0 {
-					session.mu.Lock()
-					if session.outputBuffer.Len() >= maxOutputBufferSize {
-						if !session.outputTruncated {
-							session.outputBuffer.WriteString(outputTruncateMarker)
-							session.outputTruncated = true
-						}
-					} else {
-						session.outputBuffer.Write(buf[:n])
-					}
-					session.mu.Unlock()
+					session.appendOutput(buf[:n])
 				}
 				if err != nil {
 					break
 				}
 			}
 
-			// Read stderr
-			for {
-				n, err := stderrReader.Read(buf)
-				if n > 0 {
-					session.mu.Lock()
-					if session.outputBuffer.Len() >= maxOutputBufferSize {
-						if !session.outputTruncated {
-							session.outputBuffer.WriteString(outputTruncateMarker)
-							session.outputTruncated = true
-						}
-					} else {
-						session.outputBuffer.Write(buf[:n])
-					}
-					session.mu.Unlock()
-				}
-				if err != nil {
-					break
-				}
-			}
-
-			// All pipes closed, get exit status
+			_ = outputReader.Close()
 			if stdinWriter != nil {
 				_ = stdinWriter.Close()
 			}
 			cmd.Wait()
 
-			session.mu.Lock()
+			exitCode := -1
 			if cmd.ProcessState != nil {
-				session.ExitCode = cmd.ProcessState.ExitCode()
+				exitCode = cmd.ProcessState.ExitCode()
 			}
-			session.Status = "done"
-			session.mu.Unlock()
+			session.finish(exitCode)
 		}()
 	}
 
@@ -850,12 +961,18 @@ func (t *ExecTool) executePoll(args map[string]any) *ToolResult {
 	}
 
 	resp := ExecResponse{
-		SessionID: sessionID,
-		Status:    session.GetStatus(),
-		ExitCode:  session.GetExitCode(),
+		SessionID:    sessionID,
+		Status:       session.GetStatus(),
+		ExitCode:     session.GetExitCode(),
+		Output:       session.Tail(pollOutputChars),
+		TotalBytes:   session.TotalBytes(),
+		DroppedBytes: session.DroppedBytes(),
 	}
 	if !session.IsDone() && session.noteCheck() >= idleCheckLimit {
 		resp.Note = pollIdleNote
+		if session.StartNotify() || session.NotifyEnabled() {
+			resp.Note += " " + autoNotifyNote
+		}
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {
@@ -878,6 +995,14 @@ const (
 		"output or kill the session instead of waiting again."
 	// defaultWaitMax caps one wait when no exec timeout is configured.
 	defaultWaitMax = 60 * time.Second
+	// completionOutputChars bounds the output tail in a completion notice.
+	completionOutputChars = 1000
+	pollOutputChars       = 1000
+	waitOutputChars       = 1000
+	killOutputChars       = 1000
+
+	notifyEnabledNote = "You will be notified when this session exits; do not poll or wait in a loop."
+	autoNotifyNote    = "A completion notification is enabled; the result will arrive as a follow-up message."
 )
 
 // executeWait blocks until the session exits, the timeout elapses, or ctx is
@@ -934,15 +1059,25 @@ func (t *ExecTool) executeWait(ctx context.Context, args map[string]any) *ToolRe
 		}
 	}
 
-	resp := ExecResponse{SessionID: sessionID, Status: session.GetStatus(), ExitCode: session.GetExitCode()}
+	resp := ExecResponse{
+		SessionID:    sessionID,
+		Status:       session.GetStatus(),
+		ExitCode:     session.GetExitCode(),
+		TotalBytes:   session.TotalBytes(),
+		DroppedBytes: session.DroppedBytes(),
+	}
 	if session.IsDone() {
 		resp.Output = session.Read()
 	} else {
+		resp.Output = session.Tail(waitOutputChars)
 		resp.Note = clampNote + fmt.Sprintf(
 			"Wait window of %ds elapsed. The process is still running; this is not an error.",
 			int64(window/time.Second))
 		if session.noteCheck() >= idleCheckLimit {
 			resp.Note += " " + waitIdleNote
+			if session.StartNotify() || session.NotifyEnabled() {
+				resp.Note += " " + autoNotifyNote
+			}
 		}
 	}
 	data, err := json.Marshal(resp)
@@ -966,12 +1101,51 @@ func (t *ExecTool) executeRead(args map[string]any) *ToolResult {
 		return ErrorResult(err.Error())
 	}
 
-	output := session.Read()
+	offset := int64(0)
+	offsetProvided := false
+	if raw, ok := args["offset"]; ok {
+		value, isNumber := raw.(float64)
+		if !isNumber || value != math.Trunc(value) || value < 0 {
+			return ErrorResult("offset must be a non-negative integer number of bytes")
+		}
+		offset = int64(value)
+		offsetProvided = true
+	}
 
+	limit := int64(t.maxOutputChars)
+	if limit <= 0 {
+		limit = config.DefaultExecMaxOutputChars
+	}
+	if raw, ok := args["limit"]; ok {
+		value, isNumber := raw.(float64)
+		if !isNumber || value != math.Trunc(value) || value < 1 {
+			return ErrorResult("limit must be a positive integer number of bytes")
+		}
+		limit = int64(value)
+	}
+	if !offsetProvided {
+		if total := session.TotalBytes(); total > limit {
+			offset = total - limit
+		}
+	}
+
+	page := session.ReadRange(offset, limit)
 	resp := ExecResponse{
-		SessionID: sessionID,
-		Output:    output,
-		Status:    session.GetStatus(),
+		SessionID:    sessionID,
+		Output:       page.Text,
+		Status:       session.GetStatus(),
+		TotalBytes:   page.TotalBytes,
+		Offset:       page.Offset,
+		NextOffset:   page.NextOffset,
+		HasMore:      page.HasMore,
+		DroppedBytes: page.DroppedBytes,
+		SkippedBytes: page.SkippedBytes,
+	}
+	if page.SkippedBytes > 0 {
+		resp.Note = fmt.Sprintf(
+			"Requested offset %d predates the retained output window; skipped %d bytes, starting at byte %d.",
+			offset, page.SkippedBytes, page.Offset,
+		)
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {
@@ -1049,11 +1223,13 @@ func (t *ExecTool) executeKill(args map[string]any) *ToolResult {
 		return ErrorResult(fmt.Sprintf("failed to kill session: %v", err))
 	}
 
-	t.sessionManager.Remove(sessionID)
-
 	resp := ExecResponse{
-		SessionID: sessionID,
-		Status:    "done",
+		SessionID:    sessionID,
+		Status:       session.GetStatus(),
+		ExitCode:     session.GetExitCode(),
+		Output:       session.Tail(killOutputChars),
+		TotalBytes:   session.TotalBytes(),
+		DroppedBytes: session.DroppedBytes(),
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {
@@ -1061,7 +1237,7 @@ func (t *ExecTool) executeKill(args map[string]any) *ToolResult {
 	}
 	return &ToolResult{
 		ForLLM:  string(data),
-		ForUser: fmt.Sprintf("Session %s killed", sessionID),
+		ForUser: fmt.Sprintf("Session %s killed; output retained for 30 minutes", sessionID),
 		IsError: false,
 	}
 }
@@ -1359,6 +1535,14 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 		if err != nil {
 			return ""
 		}
+		// Resolve symlinks in the workspace root too. Candidate paths below are
+		// resolved with EvalSymlinks before the containment check, so comparing
+		// them against an unresolved root reports every relative path as an
+		// escape whenever the workspace path contains a symlink (for example
+		// /var -> /private/var on macOS, or a symlinked project directory).
+		if resolved, err := filepath.EvalSymlinks(cwdPath); err == nil {
+			cwdPath = resolved
+		}
 
 		// Web URL schemes whose path components (starting with //) should be exempt
 		// from workspace sandbox checks. file: is intentionally excluded so that
@@ -1422,41 +1606,46 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 				}
 			}
 
-			p, err := commandPathAbs(commandPathTextFromMatch(cmd, loc[0], loc[1]), cwdPath)
-			if err != nil {
-				continue
-			}
-
-			// Windows-specific: normalize paths to block ADS and extended-length paths
-			if runtime.GOOS == "windows" {
-				// Strip \\?\ prefix (extended-length path)
-				p = strings.TrimPrefix(p, `\\?\`)
-				// Strip NTFS alternate data streams (only if colon is not at position 1 = drive letter)
-				if idx := strings.Index(p, ":"); idx > 1 {
-					p = p[:idx]
+			// A single regex match can contain several path tokens when shell
+			// separators are not surrounded by whitespace ("2>/dev/null;echo b"),
+			// so every token is checked instead of only the leading one.
+			for _, pathText := range commandPathTextsFromMatch(cmd, loc[0], loc[1]) {
+				p, err := commandPathAbs(pathText, cwdPath)
+				if err != nil {
+					continue
 				}
-			}
 
-			// Check symlinks and junctions
-			resolved, err := filepath.EvalSymlinks(p)
-			if err == nil {
-				p = resolved
-			}
+				// Windows-specific: normalize paths to block ADS and extended-length paths
+				if runtime.GOOS == "windows" {
+					// Strip \\?\ prefix (extended-length path)
+					p = strings.TrimPrefix(p, `\\?\`)
+					// Strip NTFS alternate data streams (only if colon is not at position 1 = drive letter)
+					if idx := strings.Index(p, ":"); idx > 1 {
+						p = p[:idx]
+					}
+				}
 
-			if safePaths[p] {
-				continue
-			}
-			if fstools.IsAllowedPath(p, t.allowedPathPatterns) {
-				continue
-			}
+				// Check symlinks and junctions
+				resolved, err := filepath.EvalSymlinks(p)
+				if err == nil {
+					p = resolved
+				}
 
-			rel, err := filepath.Rel(cwdPath, p)
-			if err != nil {
-				continue
-			}
+				if safePaths[p] {
+					continue
+				}
+				if fstools.IsAllowedPath(p, t.allowedPathPatterns) {
+					continue
+				}
 
-			if strings.HasPrefix(rel, "..") {
-				return "Command blocked by safety guard (path outside working dir)"
+				rel, err := filepath.Rel(cwdPath, p)
+				if err != nil {
+					continue
+				}
+
+				if strings.HasPrefix(rel, "..") {
+					return "Command blocked by safety guard (path outside working dir)"
+				}
 			}
 		}
 	}
@@ -1471,7 +1660,48 @@ func commandPathAbs(pathText, cwdPath string) (string, error) {
 	return filepath.Abs(filepath.Join(cwdPath, pathText))
 }
 
-func commandPathTextFromMatch(cmd string, start, end int) string {
+func commandPathTextsFromMatch(cmd string, start, end int) []string {
+	return splitShellPathMatch(commandPathTextFromMatchRaw(cmd, start, end))
+}
+
+// shellPathSeparators are bytes that end a path token in shell syntax.
+const shellPathSeparators = ";|&<>`"
+
+// splitShellPathMatch splits text that absolutePathPattern swallows because the
+// regex only stops at whitespace or quotes. For "2>/dev/null;echo b" the match is
+// "/dev/null;echo", which is not in safePaths and is therefore reported as a path
+// outside the working directory (issue #435). Splitting on shell separators turns
+// it into "/dev/null" and "echo", so the safe pseudo-device is recognized while
+// the rest of the token is still validated: "/dev/null;cat</etc/shadow" also
+// yields "/etc/shadow", which keeps the containment check effective.
+//
+// Trailing ",)]}:" is stripped from every segment, so a real file whose name ends
+// in one of those characters (for example "/workspace/backup,") is checked as the
+// name without it. Rare, and accepted in exchange for not blocking "(... /dev/null)".
+//
+// Windows-style matches (drive letter, backslashes) are left untouched because
+// the same bytes can legitimately appear inside a Windows path.
+func splitShellPathMatch(pathText string) []string {
+	if !strings.HasPrefix(pathText, "/") {
+		return []string{pathText}
+	}
+
+	segments := strings.FieldsFunc(pathText, func(r rune) bool {
+		return strings.ContainsRune(shellPathSeparators, r)
+	})
+	paths := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		if segment = strings.TrimRight(segment, ",)]}:"); segment != "" {
+			paths = append(paths, segment)
+		}
+	}
+	if len(paths) == 0 {
+		return []string{pathText}
+	}
+	return paths
+}
+
+func commandPathTextFromMatchRaw(cmd string, start, end int) string {
 	raw := cmd[start:end]
 	if !strings.HasPrefix(raw, "/") || isUnixAbsolutePathMatchStart(cmd, start) {
 		return raw

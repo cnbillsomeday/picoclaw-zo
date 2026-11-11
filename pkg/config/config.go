@@ -548,6 +548,59 @@ type SubTurnConfig struct {
 	ConcurrencyTimeoutSec int `json:"concurrency_timeout_sec" env:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_CONCURRENCY_TIMEOUT_SEC"`
 }
 
+// MemoryConfig bounds the persistent memory injected into the system prompt.
+// Limits are counted in Unicode characters (Go runes), not bytes. A
+// non-positive limit falls back to its default.
+//
+// The prompt carries a snapshot taken when a session starts: memory written
+// mid-session reaches the file at once but shows up from the next session on,
+// which keeps the provider prompt cache warm.
+type MemoryConfig struct {
+	// Enabled injects MEMORY.md into the prompt and registers the memory tool.
+	// USER.md is injected either way.
+	Enabled bool `json:"memory_enabled" env:"PICOCLAW_AGENTS_DEFAULTS_MEMORY_ENABLED"`
+	// MemoryCharLimit caps MEMORY.md. The memory tool refuses writes past it.
+	MemoryCharLimit int `json:"memory_char_limit" env:"PICOCLAW_AGENTS_DEFAULTS_MEMORY_CHAR_LIMIT"`
+	// UserCharLimit caps USER.md, enforced like MemoryCharLimit.
+	UserCharLimit int `json:"user_char_limit" env:"PICOCLAW_AGENTS_DEFAULTS_MEMORY_USER_CHAR_LIMIT"`
+	// DailyNotesEnabled injects the recent daily notes (memory/YYYYMM/YYYYMMDD.md).
+	DailyNotesEnabled bool `json:"daily_notes_enabled" env:"PICOCLAW_AGENTS_DEFAULTS_MEMORY_DAILY_NOTES_ENABLED"`
+	// RecentDailyNotesCount is how many days of daily notes are injected.
+	RecentDailyNotesCount int `json:"recent_daily_notes_count" env:"PICOCLAW_AGENTS_DEFAULTS_MEMORY_RECENT_DAILY_NOTES_COUNT"`
+	// DailyNotesCharLimit caps each injected daily note; the newest lines win.
+	DailyNotesCharLimit int `json:"daily_notes_char_limit" env:"PICOCLAW_AGENTS_DEFAULTS_MEMORY_DAILY_NOTES_CHAR_LIMIT"`
+}
+
+const (
+	DefaultMemoryCharLimit       = 2200
+	DefaultUserCharLimit         = 1375
+	DefaultRecentDailyNotesCount = 3
+	DefaultDailyNotesCharLimit   = 1000
+)
+
+func positiveOr(v, def int) int {
+	if v > 0 {
+		return v
+	}
+	return def
+}
+
+func (m MemoryConfig) GetMemoryCharLimit() int {
+	return positiveOr(m.MemoryCharLimit, DefaultMemoryCharLimit)
+}
+
+func (m MemoryConfig) GetUserCharLimit() int {
+	return positiveOr(m.UserCharLimit, DefaultUserCharLimit)
+}
+
+func (m MemoryConfig) GetRecentDailyNotesCount() int {
+	return positiveOr(m.RecentDailyNotesCount, DefaultRecentDailyNotesCount)
+}
+
+func (m MemoryConfig) GetDailyNotesCharLimit() int {
+	return positiveOr(m.DailyNotesCharLimit, DefaultDailyNotesCharLimit)
+}
+
 type ToolFeedbackConfig struct {
 	Enabled          bool `json:"enabled"           env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_ENABLED"`
 	MaxArgsLength    int  `json:"max_args_length"   env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_MAX_ARGS_LENGTH"`
@@ -610,8 +663,9 @@ type AgentDefaults struct {
 	VisionMaxImageDimension   int                 `json:"vision_max_image_dimension,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_VISION_MAX_IMAGE_DIMENSION"`
 	VisionJPEGQuality         int                 `json:"vision_jpeg_quality,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_VISION_JPEG_QUALITY"`
 	Routing                   *RoutingConfig      `json:"routing,omitempty"`
-	SteeringMode              string              `json:"steering_mode,omitempty"              env:"PICOCLAW_AGENTS_DEFAULTS_STEERING_MODE"`      // "one-at-a-time" (default) or "all"
-	MaxParallelTurns          int                 `json:"max_parallel_turns,omitempty"         env:"PICOCLAW_AGENTS_DEFAULTS_MAX_PARALLEL_TURNS"` // Max concurrent turns (0 or 1 = sequential)
+	SteeringMode              string              `json:"steering_mode,omitempty"              env:"PICOCLAW_AGENTS_DEFAULTS_STEERING_MODE"`           // "one-at-a-time" (default) or "all"
+	MaxParallelTurns          int                 `json:"max_parallel_turns,omitempty"         env:"PICOCLAW_AGENTS_DEFAULTS_MAX_PARALLEL_TURNS"`      // Max concurrent turns (0 or 1 = sequential)
+	MaxParallelToolCalls      int                 `json:"max_parallel_tool_calls,omitempty"    env:"PICOCLAW_AGENTS_DEFAULTS_MAX_PARALLEL_TOOL_CALLS"` // Max concurrent tool calls of one LLM response (0 or 1 = sequential)
 	SubTurn                   SubTurnConfig       `json:"subturn"                                                                                          envPrefix:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_"`
 	ToolFeedback              ToolFeedbackConfig  `json:"tool_feedback,omitempty"`
 	LoopDetection             LoopDetectionConfig `json:"loop_detection,omitempty"`
@@ -619,6 +673,7 @@ type AgentDefaults struct {
 	ContextManager            string              `json:"context_manager,omitempty"            env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_MANAGER"`
 	ContextManagerConfig      json.RawMessage     `json:"context_manager_config,omitempty"     env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_MANAGER_CONFIG"`
 	TurnProfile               TurnProfileConfig   `json:"turn_profile,omitempty"`
+	Memory                    MemoryConfig        `json:"memory,omitempty"`
 	MaxLLMRetries             int                 `json:"max_llm_retries,omitempty"            env:"PICOCLAW_AGENTS_DEFAULTS_MAX_LLM_RETRIES"`
 	LLMRetryBackoffSecs       int                 `json:"llm_retry_backoff_secs,omitempty"     env:"PICOCLAW_AGENTS_DEFAULTS_LLM_RETRY_BACKOFF_SECS"`
 	// LLMRetryOnEmptyContent retries a successful response that carries no
@@ -1038,6 +1093,7 @@ type ModelConfig struct {
 	RPM                 int                  `json:"rpm,omitempty"`              // Requests per minute limit
 	MaxTokensField      string               `json:"max_tokens_field,omitempty"` // Field name for max tokens (e.g., "max_completion_tokens")
 	RequestTimeout      int                  `json:"request_timeout,omitempty"`
+	ProviderSort        string               `json:"provider_sort,omitempty"`         // OpenRouter provider routing: price|throughput|latency
 	ThinkingLevel       string               `json:"thinking_level,omitempty"`        // Extended thinking: off|low|medium|high|xhigh|adaptive
 	ToolSchemaTransform string               `json:"tool_schema_transform,omitempty"` // Optional tool schema compatibility transform (e.g. "simple")
 	Streaming           ModelStreamingConfig `json:"streaming,omitzero"`              // Opt-in for provider streaming on this model entry
@@ -1086,6 +1142,9 @@ func (c *ModelConfig) Validate() error {
 		return fmt.Errorf("model is required")
 	}
 	if _, err := providercommon.NormalizeToolSchemaTransform(c.ToolSchemaTransform); err != nil {
+		return err
+	}
+	if _, err := providercommon.NormalizeProviderSort(c.ProviderSort); err != nil {
 		return err
 	}
 
@@ -1471,34 +1530,42 @@ type ToolsConfig struct {
 	// inline as a bounded head+tail preview plus a pointer to the full artifact.
 	// The limit is counted in Unicode characters (Go runes), not bytes.
 	// Default: 16384. A non-positive value disables the protection.
-	MaxInlineResultChars int                     `json:"max_inline_result_chars" yaml:"-"                env:"PICOCLAW_TOOLS_MAX_INLINE_RESULT_CHARS"`
-	Web                  WebToolsConfig          `json:"web"                     yaml:"web,omitempty"`
-	Cron                 CronToolsConfig         `json:"cron"                    yaml:"-"`
-	Exec                 ExecConfig              `json:"exec"                    yaml:"-"`
-	Skills               SkillsToolsConfig       `json:"skills"                  yaml:"skills,omitempty"`
-	MediaCleanup         MediaCleanupConfig      `json:"media_cleanup"           yaml:"-"`
-	MCP                  MCPConfig               `json:"mcp"                     yaml:"-"`
-	AppendFile           ToolConfig              `json:"append_file"             yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_APPEND_FILE_"`
-	EditFile             ToolConfig              `json:"edit_file"               yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_EDIT_FILE_"`
-	FindSkills           ToolConfig              `json:"find_skills"             yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_FIND_SKILLS_"`
-	I2C                  ToolConfig              `json:"i2c"                     yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_I2C_"`
-	ImageGenerate        ImageGenerateToolConfig `json:"image_generate"          yaml:"-"`
-	InstallSkill         ToolConfig              `json:"install_skill"           yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_INSTALL_SKILL_"`
-	ListDir              ToolConfig              `json:"list_dir"                yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_LIST_DIR_"`
-	LoadImage            ToolConfig              `json:"load_image"              yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_LOAD_IMAGE_"`
-	Message              MessageToolsConfig      `json:"message"                 yaml:"-"`
-	ReadFile             ReadFileToolConfig      `json:"read_file"               yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_READ_FILE_"`
-	SearchFiles          ToolConfig              `json:"search_files"            yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_SEARCH_FILES_"`
-	Serial               ToolConfig              `json:"serial"                  yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_SERIAL_"`
-	SendFile             ToolConfig              `json:"send_file"               yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_SEND_FILE_"`
-	SendTTS              ToolConfig              `json:"send_tts"                yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_SEND_TTS_"`
-	Spawn                ToolConfig              `json:"spawn"                   yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_SPAWN_"`
-	SpawnStatus          ToolConfig              `json:"spawn_status"            yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_SPAWN_STATUS_"`
-	SPI                  ToolConfig              `json:"spi"                     yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_SPI_"`
-	Subagent             ToolConfig              `json:"subagent"                yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_SUBAGENT_"`
-	Todo                 ToolConfig              `json:"todo"                    yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_TODO_"`
-	WebFetch             ToolConfig              `json:"web_fetch"               yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_WEB_FETCH_"`
-	WriteFile            ToolConfig              `json:"write_file"              yaml:"-"                                                             envPrefix:"PICOCLAW_TOOLS_WRITE_FILE_"`
+	MaxInlineResultChars int `json:"max_inline_result_chars" yaml:"-" env:"PICOCLAW_TOOLS_MAX_INLINE_RESULT_CHARS"`
+	// ArtifactMaxFiles caps how many files are kept in each artifact directory
+	// (for example <workspace>/.artifacts/tool and .artifacts/mcp) after
+	// age-based pruning. Default: 128. A non-positive value disables the count
+	// bound.
+	ArtifactMaxFiles int `json:"artifact_max_files" yaml:"-" env:"PICOCLAW_TOOLS_ARTIFACT_MAX_FILES"`
+	// ArtifactMaxAgeHours caps how old an artifact file may be before it is
+	// pruned. Default: 24. A non-positive value disables age-based pruning.
+	ArtifactMaxAgeHours int                     `json:"artifact_max_age_hours" yaml:"-"                env:"PICOCLAW_TOOLS_ARTIFACT_MAX_AGE_HOURS"`
+	Web                 WebToolsConfig          `json:"web"                    yaml:"web,omitempty"`
+	Cron                CronToolsConfig         `json:"cron"                   yaml:"-"`
+	Exec                ExecConfig              `json:"exec"                   yaml:"-"`
+	Skills              SkillsToolsConfig       `json:"skills"                 yaml:"skills,omitempty"`
+	MediaCleanup        MediaCleanupConfig      `json:"media_cleanup"          yaml:"-"`
+	MCP                 MCPConfig               `json:"mcp"                    yaml:"-"`
+	AppendFile          ToolConfig              `json:"append_file"            yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_APPEND_FILE_"`
+	EditFile            ToolConfig              `json:"edit_file"              yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_EDIT_FILE_"`
+	FindSkills          ToolConfig              `json:"find_skills"            yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_FIND_SKILLS_"`
+	I2C                 ToolConfig              `json:"i2c"                    yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_I2C_"`
+	ImageGenerate       ImageGenerateToolConfig `json:"image_generate"         yaml:"-"`
+	InstallSkill        ToolConfig              `json:"install_skill"          yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_INSTALL_SKILL_"`
+	ListDir             ToolConfig              `json:"list_dir"               yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_LIST_DIR_"`
+	LoadImage           ToolConfig              `json:"load_image"             yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_LOAD_IMAGE_"`
+	Message             MessageToolsConfig      `json:"message"                yaml:"-"`
+	ReadFile            ReadFileToolConfig      `json:"read_file"              yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_READ_FILE_"`
+	SearchFiles         ToolConfig              `json:"search_files"           yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_SEARCH_FILES_"`
+	Serial              ToolConfig              `json:"serial"                 yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_SERIAL_"`
+	SendFile            ToolConfig              `json:"send_file"              yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_SEND_FILE_"`
+	SendTTS             ToolConfig              `json:"send_tts"               yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_SEND_TTS_"`
+	Spawn               ToolConfig              `json:"spawn"                  yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_SPAWN_"`
+	SpawnStatus         ToolConfig              `json:"spawn_status"           yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_SPAWN_STATUS_"`
+	SPI                 ToolConfig              `json:"spi"                    yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_SPI_"`
+	Subagent            ToolConfig              `json:"subagent"               yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_SUBAGENT_"`
+	Todo                ToolConfig              `json:"todo"                   yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_TODO_"`
+	WebFetch            ToolConfig              `json:"web_fetch"              yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_WEB_FETCH_"`
+	WriteFile           ToolConfig              `json:"write_file"             yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_WRITE_FILE_"`
 }
 
 // IsFilterSensitiveDataEnabled returns true if sensitive data filtering is enabled
@@ -1523,6 +1590,27 @@ const DefaultMaxInlineResultChars = 16 * 1024
 // A non-positive value disables large-result artifact persistence.
 func (c *ToolsConfig) GetMaxInlineResultChars() int {
 	return c.MaxInlineResultChars
+}
+
+const (
+	// DefaultArtifactMaxFiles is the default cap on files kept per artifact
+	// directory after age-based pruning.
+	DefaultArtifactMaxFiles = 128
+	// DefaultArtifactMaxAgeHours is the default retention window for artifact
+	// files, in hours.
+	DefaultArtifactMaxAgeHours = 24
+)
+
+// GetArtifactMaxFiles returns the per-directory artifact file cap.
+// A non-positive value disables the count bound.
+func (c *ToolsConfig) GetArtifactMaxFiles() int {
+	return c.ArtifactMaxFiles
+}
+
+// GetArtifactMaxAge returns the artifact retention window.
+// A non-positive duration disables age-based pruning.
+func (c *ToolsConfig) GetArtifactMaxAge() time.Duration {
+	return time.Duration(c.ArtifactMaxAgeHours) * time.Hour
 }
 
 type SearchCacheConfig struct {
@@ -2198,6 +2286,7 @@ func expandMultiKeyModels(models []*ModelConfig) []*ModelConfig {
 				RPM:                 m.RPM,
 				MaxTokensField:      m.MaxTokensField,
 				RequestTimeout:      m.RequestTimeout,
+				ProviderSort:        m.ProviderSort,
 				ThinkingLevel:       m.ThinkingLevel,
 				ToolSchemaTransform: m.ToolSchemaTransform,
 				Streaming:           m.Streaming,
@@ -2224,6 +2313,7 @@ func expandMultiKeyModels(models []*ModelConfig) []*ModelConfig {
 			RPM:                 m.RPM,
 			MaxTokensField:      m.MaxTokensField,
 			RequestTimeout:      m.RequestTimeout,
+			ProviderSort:        m.ProviderSort,
 			ThinkingLevel:       m.ThinkingLevel,
 			ToolSchemaTransform: m.ToolSchemaTransform,
 			Streaming:           m.Streaming,

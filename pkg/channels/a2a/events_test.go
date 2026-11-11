@@ -13,8 +13,8 @@ import (
 )
 
 type testLLMPayload struct {
-	TokensIn  int
-	TokensOut int
+	InputTokens  int
+	OutputTokens int
 }
 
 type testTurnEndPayload struct {
@@ -25,8 +25,8 @@ type testTurnEndPayload struct {
 
 func TestRecordLLMUsageAggregatesPerTurn(t *testing.T) {
 	c := &Channel{}
-	c.recordLLMUsage("turn-1", testLLMPayload{TokensIn: 5, TokensOut: 7})
-	c.recordLLMUsage("turn-1", testLLMPayload{TokensIn: 3, TokensOut: 4})
+	c.recordLLMUsage("turn-1", testLLMPayload{InputTokens: 5, OutputTokens: 7})
+	c.recordLLMUsage("turn-1", testLLMPayload{InputTokens: 3, OutputTokens: 4})
 	usage := c.takeTurnUsage("turn-1")
 	if usage.TokensIn != 8 || usage.TokensOut != 11 || usage.LLMCalls != 2 {
 		t.Fatalf("unexpected usage: %+v", usage)
@@ -63,7 +63,7 @@ func TestTurnEndEventSettlesPendingInbound(t *testing.T) {
 			peer: "bob", convID: "conv-1", msgID: "msg-1", attempt: attempt,
 		},
 	})
-	c.recordLLMUsage("turn-1", testLLMPayload{TokensIn: 2, TokensOut: 3})
+	c.recordLLMUsage("turn-1", testLLMPayload{InputTokens: 2, OutputTokens: 3})
 
 	evt := runtimeevents.Event{
 		Kind: runtimeevents.KindAgentTurnEnd,
@@ -156,7 +156,7 @@ func TestEmptyScopeTurnEndIgnored(t *testing.T) {
 		t.Fatalf("state entry = %+v, want still pending", got)
 	}
 	// The cron turn's usage must not accumulate either.
-	c.recordLLMUsage("", testLLMPayload{TokensIn: 1, TokensOut: 1})
+	c.recordLLMUsage("", testLLMPayload{InputTokens: 1, OutputTokens: 1})
 	c.usageMu.Lock()
 	emptyOK := len(c.usageByTurn) == 0
 	c.usageMu.Unlock()
@@ -173,16 +173,16 @@ func TestStaleUsagePruned(t *testing.T) {
 		inboundTimeout: time.Minute,
 		now:            func() time.Time { return start },
 	}
-	c.recordLLMUsage("turn-old", testLLMPayload{TokensIn: 1, TokensOut: 1})
+	c.recordLLMUsage("turn-old", testLLMPayload{InputTokens: 1, OutputTokens: 1})
 	if got := c.takeTurnUsage("turn-old"); got == (turnUsage{}) {
 		t.Fatal("usage not recorded")
 	}
 
 	// Re-add, then advance past 2*inboundTimeout: gc on the next record
 	// must drop the stale entry.
-	c.recordLLMUsage("turn-old", testLLMPayload{TokensIn: 2, TokensOut: 2})
+	c.recordLLMUsage("turn-old", testLLMPayload{InputTokens: 2, OutputTokens: 2})
 	c.now = func() time.Time { return start.Add(3 * time.Minute) }
-	c.recordLLMUsage("turn-fresh", testLLMPayload{TokensIn: 1, TokensOut: 1})
+	c.recordLLMUsage("turn-fresh", testLLMPayload{InputTokens: 1, OutputTokens: 1})
 	c.usageMu.Lock()
 	_, stale := c.usageByTurn["turn-old"]
 	fresh, ok := c.usageByTurn["turn-fresh"]

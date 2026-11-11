@@ -43,6 +43,7 @@ type Provider struct {
 	maxTokensField string // Field name for max tokens (e.g., "max_completion_tokens" for o1/glm models)
 	httpClient     *http.Client
 	extraBody      map[string]any // Additional fields to inject into request body
+	providerSort   string         // OpenRouter provider routing sort: price|throughput|latency
 	customHeaders  map[string]string
 	userAgent      string
 	session        common.SessionHeader
@@ -60,7 +61,6 @@ var stripModelPrefixProviders = map[string]struct{}{
 	"nearai":      {},
 	"venice":      {},
 	"moonshot":    {},
-	"nvidia":      {},
 	"groq":        {},
 	"ollama":      {},
 	"deepseek":    {},
@@ -98,6 +98,14 @@ func WithRequestTimeout(timeout time.Duration) Option {
 func WithExtraBody(extraBody map[string]any) Option {
 	return func(p *Provider) {
 		p.extraBody = extraBody
+	}
+}
+
+// WithProviderSort sets the OpenRouter provider routing sort order.
+// Supported values are "price", "throughput", and "latency".
+func WithProviderSort(providerSort string) Option {
+	return func(p *Provider) {
+		p.providerSort = strings.TrimSpace(providerSort)
 	}
 }
 
@@ -199,7 +207,7 @@ func (p *Provider) buildRequestBody(
 		requestBody[fieldName] = maxTokens
 	}
 
-	if temperature, ok := common.AsFloat(options["temperature"]); ok {
+	if temperature, ok := common.AsFloat(options["temperature"]); ok && !common.ModelDeprecatesTemperature(model) {
 		lowerModel := strings.ToLower(model)
 		if strings.Contains(lowerModel, "kimi") && strings.Contains(lowerModel, "k2") {
 			requestBody["temperature"] = 1.0
@@ -231,7 +239,46 @@ func (p *Provider) buildRequestBody(
 	// These are injected last so they take precedence over defaults.
 	maps.Copy(requestBody, p.extraBody)
 
+	p.applyProviderSort(requestBody)
+
 	return requestBody
+}
+
+// applyProviderSort injects OpenRouter's provider routing preference. It is
+// applied after extra_body so an explicitly configured provider.sort always
+// wins, while other provider routing fields (for example order or only) are
+// preserved.
+func (p *Provider) applyProviderSort(requestBody map[string]any) {
+	if !p.supportsProviderSort() {
+		return
+	}
+
+	providerSort, err := common.NormalizeProviderSort(p.providerSort)
+	if err != nil || providerSort == "" {
+		return
+	}
+
+	providerConfig := map[string]any{}
+	if raw, exists := requestBody["provider"]; exists {
+		existing, ok := raw.(map[string]any)
+		if !ok {
+			return
+		}
+		if _, hasSort := existing["sort"]; hasSort {
+			return
+		}
+		// Copy the extra_body map so concurrent requests do not write to
+		// shared configuration state.
+		providerConfig = make(map[string]any, len(existing)+1)
+		maps.Copy(providerConfig, existing)
+	}
+
+	providerConfig["sort"] = providerSort
+	requestBody["provider"] = providerConfig
+}
+
+func (p *Provider) supportsProviderSort() bool {
+	return p.providerName == "openrouter" || isOpenRouterHost(p.apiBase)
 }
 
 func (p *Provider) applyThinkingControl(requestBody map[string]any, model string, options map[string]any) {
@@ -372,6 +419,11 @@ func (p *Provider) SetProviderName(providerName string) {
 	p.providerName = strings.ToLower(strings.TrimSpace(providerName))
 }
 
+// SetProviderSort sets the OpenRouter provider routing sort order.
+func (p *Provider) SetProviderSort(providerSort string) {
+	p.providerSort = strings.TrimSpace(providerSort)
+}
+
 // SetSessionHeader makes every request carry options["session_key"] (or
 // fallback when absent) in the named header; an explicit custom header wins.
 func (p *Provider) SetSessionHeader(name, fallback string) {
@@ -380,6 +432,16 @@ func (p *Provider) SetSessionHeader(name, fallback string) {
 
 func (p *Provider) SupportsThinking() bool {
 	return strings.EqualFold(strings.TrimSpace(p.providerName), "deepseek") || isDeepSeekHost(p.apiBase)
+}
+
+// ReplaysReasoningContent reports whether assistant reasoning_content is sent
+// back in later requests. DeepSeek and MiMo keep it for tool rounds; every
+// other OpenAI-compatible provider gets it stripped by prepareMessagesForRequest.
+func (p *Provider) ReplaysReasoningContent() bool {
+	if p == nil {
+		return true
+	}
+	return p.requiresToolRoundReasoningReplay()
 }
 
 func (p *Provider) prepareMessagesForRequest(messages []Message) []Message {
@@ -566,7 +628,7 @@ func (p *Provider) responsesRequestBody(
 	if maxTokens, ok := common.AsInt(options["max_tokens"]); ok {
 		body["max_output_tokens"] = maxTokens
 	}
-	if temperature, ok := common.AsFloat(options["temperature"]); ok {
+	if temperature, ok := common.AsFloat(options["temperature"]); ok && !common.ModelDeprecatesTemperature(model) {
 		body["temperature"] = temperature
 	}
 	if topP, ok := common.AsFloat(options["top_p"]); ok {

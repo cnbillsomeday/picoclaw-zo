@@ -1,6 +1,10 @@
+---
+description: "PicoClaw configuration reference: environment variables, workspace layout, routing rules, sandbox and isolation settings."
+title: "Configuration Guide"
+---
 # ⚙️ Configuration Guide
 
-> Back to [README](../README.md)
+> Back to [Guides](./)
 
 ## ⚙️ Configuration
 
@@ -69,7 +73,9 @@ The Gateway can reload `config.json` without a restart. Two independent triggers
 
   The default is `false`. When enabled, PicoClaw polls the config file (every 2 seconds, scaled by `power.poll_interval_multiplier`) and reloads after a change is written and validated. An invalid or partially written file is ignored and retried on the next poll; the last valid configuration stays in effect.
 
-- **`POST /reload`** — always available, regardless of `gateway.hot_reload`, on the shared Gateway HTTP server. It requires the Gateway auth token (`Authorization: Bearer <token>`) when one is configured and returns `202 Accepted` as soon as the reload is scheduled. The reload itself runs asynchronously; watch the `gateway.reload.started` / `gateway.reload.completed` / `gateway.reload.failed` runtime events, or the logs, for the outcome.
+- **`POST /reload`** — always available, regardless of `gateway.hot_reload`, on the shared Gateway HTTP server. It requires the Gateway auth token (`Authorization: Bearer <token>`) when one is configured and returns `202 Accepted` as soon as the reload is scheduled. The reload itself runs asynchronously; watch the `gateway.reload.started` / `gateway.reload.completed` / `gateway.reload.failed` runtime events, or the logs, for the outcome. `GET /reload/status` reports the latest reload generation and outcome so callers can wait for completion.
+
+Saving model settings from the Web UI triggers a reload automatically and clears the dashboard's restart-required banner once the reload succeeds. Failed reloads leave the previous configuration active and keep the banner visible.
 
 A reload swaps the provider and the agent registry/configuration, restarts the cron, heartbeat, media, device and voice services, and restarts only the channels whose configuration changed. In-flight requests are allowed to drain before the previous provider is closed.
 
@@ -1178,6 +1184,10 @@ This keeps the runtime lightweight while making new OpenAI-compatible backends m
 
 > **Note**: The `providers` format is deprecated. Use the new `model_list` format with `.security.yml` for better security.
 >
+> **`max_parallel_tool_calls`**: Maximum number of tool calls from one model response that may run concurrently. `4` is the default; `0` or `1` = sequential. Only consecutive, compatible calls (read-only web tools and non-conflicting file operations) run together; see [Parallel tool calls](../architecture/parallel-tool-calls.md).
+>
+> **`memory`** (`agents.defaults.memory`): bounds the persistent memory injected into the system prompt. `memory_enabled` (default `true`) injects `memory/MEMORY.md` (`USER.md` is injected either way) and registers the `memory` tool (`add` / `replace` / `remove` on `MEMORY.md` or `USER.md`). `memory_char_limit` (`2200`) and `user_char_limit` (`1375`) cap those files; a write past the cap is refused with `success: false`, the characters to free and the current entries, and nothing is truncated or dropped silently. `daily_notes_enabled` (`true`) injects the last `recent_daily_notes_count` (`3`) daily notes (`memory/YYYYMM/YYYYMMDD.md`), each capped at `daily_notes_char_limit` (`1000`). A file that is already over its cap (for example a hand-edited `MEMORY.md`) is never rewritten: the prompt gets the newest sections whole, older ones reduced to their headings, and a footer pointing to the full file. The prompt carries a snapshot frozen when the session starts, so memory written mid-session reaches the file at once but shows up from the next session (or after `/clear`), which keeps the provider prompt cache warm. While memory is enabled, `write_file`, `edit_file` and `append_file` refuse any write to `MEMORY.md` and `USER.md` (reading them is fine), so the limits cannot be bypassed: only the `memory` tool changes them. The `exec` tool is not covered. Limits count characters, not bytes; a non-positive limit means the default.
+>
 > **`max_parallel_turns`**: Controls concurrent processing of messages from different sessions. `5` is the default; `0` or `1` = sequential; `>1` = parallel. Messages from the same session are always serialized. See [Steering docs](../architecture/steering.md) for details.
 
 </details>
@@ -1271,7 +1281,7 @@ Command cron jobs can execute shell commands. By default, remote channels cannot
 | ----- | ----------- |
 | [Security Configuration](../security/security_configuration.md) | Store API keys and secrets in separate `.security.yml` file |
 | [Sensitive Data Filtering](../security/sensitive_data_filtering.md) | Filter API keys and tokens from tool results before sending to LLM |
-| [Hook System](../architecture/hooks/README.md) | Event-driven hooks: observers, interceptors, approval hooks |
+| [Hook System](../architecture/hooks/) | Event-driven hooks: observers, interceptors, approval hooks |
 | [Steering](../architecture/steering.md) | Inject messages into a running agent loop between tool calls |
 | [SubTurn](../architecture/subturn.md) | Subagent coordination, concurrency control, lifecycle |
 | [Context Management](../architecture/agent-refactor/context.md) | Context boundary detection, proactive budget check, compression |

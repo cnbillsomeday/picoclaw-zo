@@ -88,6 +88,31 @@ func TestSerializeMessages_PlainText(t *testing.T) {
 	}
 }
 
+func TestSerializeMessages_OmitsInternalUsage(t *testing.T) {
+	messages := []Message{{
+		Role:    "assistant",
+		Content: "hi",
+		Usage: &UsageInfo{
+			PromptTokens:     10,
+			CompletionTokens: 5,
+			TotalTokens:      15,
+		},
+	}}
+	result := SerializeMessages(messages)
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var msgs []map[string]any
+	if err := json.Unmarshal(data, &msgs); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if _, ok := msgs[0]["usage"]; ok {
+		t.Fatalf("usage must not be sent to providers: %s", data)
+	}
+}
+
 func TestSerializeMessages_WithMedia(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Content: "describe this", Media: []string{"data:image/png;base64,abc123"}},
@@ -492,6 +517,28 @@ func TestHandleErrorResponse_JSONError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "HTML") {
 		t.Errorf("should not mention HTML for JSON error, got %v", err)
+	}
+}
+
+func TestHandleErrorResponse_KeepsLongJSONReason(t *testing.T) {
+	reason := "google/gemini-2.5-flash-lite is temporarily rate-limited upstream, please retry shortly"
+	body := `{"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"` +
+		strings.Repeat("x", 400) + reason + `"}}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	resp, err := http.Get(server.URL)
+	if err != nil {
+		t.Fatalf("http.Get() error = %v", err)
+	}
+	defer resp.Body.Close()
+	err = HandleErrorResponse(resp, server.URL)
+	if err == nil || !strings.Contains(err.Error(), reason) {
+		t.Fatalf("upstream reason lost from error: %v", err)
 	}
 }
 

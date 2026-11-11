@@ -37,8 +37,15 @@ const (
 	defaultRateLimit        = 10 // default 10 msg/s
 	maxRetries              = 3
 	rateLimitDelay          = 1 * time.Second
+	maxRateLimitDelay       = 1 * time.Minute
 	baseBackoff             = 500 * time.Millisecond
 	maxBackoff              = 8 * time.Second
+
+	// chunkSpacing is the minimum pause between chunks of the same logical
+	// message. Without it, a long reply split by the Manager is sent back to
+	// back and can trip per-chat platform limits even though the channel-wide
+	// rate limiter allows it.
+	chunkSpacing = 250 * time.Millisecond
 
 	janitorInterval = 10 * time.Second
 	typingStopTTL   = 5 * time.Minute
@@ -233,6 +240,9 @@ func outboundMessageEditPayload(msg bus.OutboundMessage, content string) map[str
 	if modelName := strings.TrimSpace(msg.Context.Raw["model_name"]); modelName != "" {
 		payload["model_name"] = modelName
 	}
+	if outboundMessageIsFinal(msg) {
+		payload["final"] = true
+	}
 	return payload
 }
 
@@ -400,10 +410,20 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 	key := name + ":" + chatID
 	streamKey := streamSuppressionKey(name, chatID, msg.SessionKey)
 
-	// 1. Stop typing
-	if v, loaded := m.typingStops.LoadAndDelete(key); loaded {
-		if entry, ok := v.(typingEntry); ok {
-			entry.stop() // idempotent, safe
+	isToolFeedback := outboundMessageIsToolFeedback(msg)
+	isToolCalls := outboundMessageIsToolCalls(msg)
+	isAuxiliaryMessage := outboundMessageHasAuxiliaryKind(msg)
+	isFinalMessage := outboundMessageIsFinal(msg)
+	separateToolFeedbackMessages := m.toolFeedbackSeparateMessagesEnabled()
+
+	// 1. Stop typing only when the final response is delivered. Auxiliary
+	// messages (thoughts, tool calls, progress) keep the indicator alive for
+	// the rest of the turn, including background conversations.
+	if isFinalMessage {
+		if v, loaded := m.typingStops.LoadAndDelete(key); loaded {
+			if entry, ok := v.(typingEntry); ok {
+				entry.stop() // idempotent, safe
+			}
 		}
 	}
 
@@ -413,12 +433,6 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 			entry.undo() // idempotent, safe
 		}
 	}
-
-	isToolFeedback := outboundMessageIsToolFeedback(msg)
-	isToolCalls := outboundMessageIsToolCalls(msg)
-	isAuxiliaryMessage := outboundMessageHasAuxiliaryKind(msg)
-	isFinalMessage := outboundMessageIsFinal(msg)
-	separateToolFeedbackMessages := m.toolFeedbackSeparateMessagesEnabled()
 
 	// 3. If a stream already finalized this chat, stale auxiliary messages must
 	// be dropped without consuming the final-response marker. Streaming
@@ -551,30 +565,25 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 	return nil, false
 }
 
-// preSendMedia handles typing stop, reaction undo, and placeholder cleanup
-// before sending media attachments. Unlike preSend for text messages, media
-// delivery never edits the placeholder because there is no text payload to
-// replace it with; it only attempts to delete the placeholder when possible.
+// preSendMedia handles reaction undo and placeholder cleanup before sending
+// media attachments. Unlike preSend for text messages, media delivery never
+// edits the placeholder because there is no text payload to replace it with;
+// it only attempts to delete the placeholder when possible. Typing stops at
+// the end of the turn, not on intermediate media.
 func (m *Manager) preSendMedia(ctx context.Context, name string, msg bus.OutboundMediaMessage, ch Channel) {
 	chatID := outboundMediaChatID(msg)
 	key := name + ":" + chatID
 	streamKey := streamSuppressionKey(name, chatID, msg.SessionKey)
 
-	// 1. Stop typing
-	if v, loaded := m.typingStops.LoadAndDelete(key); loaded {
-		if entry, ok := v.(typingEntry); ok {
-			entry.stop() // idempotent, safe
-		}
-	}
-
-	// 2. Undo reaction
+	// 1. Undo reaction. Typing stops when the turn ends so intermediate media
+	// does not hide the running indicator.
 	if v, loaded := m.reactionUndos.LoadAndDelete(key); loaded {
 		if entry, ok := v.(reactionEntry); ok {
 			entry.undo() // idempotent, safe
 		}
 	}
 
-	// 3. Clear any finalized stream markers for this chat before media delivery.
+	// 2. Clear any finalized stream markers for this chat before media delivery.
 	m.streamActive.LoadAndDelete(streamKey)
 	m.streamAuxiliaryTombstones.Delete(streamKey)
 
@@ -582,7 +591,7 @@ func (m *Manager) preSendMedia(ctx context.Context, name string, msg bus.Outboun
 		clearTrackedToolFeedbackMessage(ch, chatID, &msg.Context)
 	}
 
-	// 4. Delete placeholder if present.
+	// 3. Delete placeholder if present.
 	if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
 		if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
 			if deleter, ok := ch.(MessageDeleter); ok {
@@ -744,33 +753,32 @@ func setStreamerModelName(streamer any, modelName string) {
 }
 
 type turnUsageStreamer interface {
-	SetTurnUsage(inputTokens, outputTokens int)
+	SetTurnUsage(usage bus.TokenUsage)
 }
 
 // setStreamerTurnUsage forwards real per-turn token usage to a streamer that
 // supports it, transparently unwrapping the manager's streamer wrappers.
-func setStreamerTurnUsage(streamer any, inputTokens, outputTokens int) {
+func setStreamerTurnUsage(streamer any, usage bus.TokenUsage) {
 	setter, ok := streamer.(turnUsageStreamer)
 	if !ok {
 		return
 	}
-	setter.SetTurnUsage(inputTokens, outputTokens)
+	setter.SetTurnUsage(usage)
 }
 
 // splitMarkerStreamer turns accumulated streaming text containing
 // MessageSplitMarker into separate channel stream messages.
 type splitMarkerStreamer struct {
-	mu               sync.Mutex
-	current          bus.Streamer
-	reasoning        bus.ReasoningStreamer
-	begin            func(context.Context) (bus.Streamer, error)
-	completedParts   int
-	finalized        bool
-	onFinalize       func(context.Context, string)
-	clearMarker      func()
-	modelName        string
-	turnInputTokens  int
-	turnOutputTokens int
+	mu             sync.Mutex
+	current        bus.Streamer
+	reasoning      bus.ReasoningStreamer
+	begin          func(context.Context) (bus.Streamer, error)
+	completedParts int
+	finalized      bool
+	onFinalize     func(context.Context, string)
+	clearMarker    func()
+	modelName      string
+	turnUsage      bus.TokenUsage
 }
 
 func (s *splitMarkerStreamer) Update(ctx context.Context, content string) error {
@@ -821,12 +829,11 @@ func (s *splitMarkerStreamer) SetModelName(modelName string) {
 	setStreamerModelName(s.reasoning, s.modelName)
 }
 
-func (s *splitMarkerStreamer) SetTurnUsage(inputTokens, outputTokens int) {
+func (s *splitMarkerStreamer) SetTurnUsage(usage bus.TokenUsage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.turnInputTokens = inputTokens
-	s.turnOutputTokens = outputTokens
-	setStreamerTurnUsage(s.current, s.turnInputTokens, s.turnOutputTokens)
+	s.turnUsage = usage
+	setStreamerTurnUsage(s.current, s.turnUsage)
 }
 
 func (s *splitMarkerStreamer) Cancel(ctx context.Context) {
@@ -908,7 +915,7 @@ func (s *splitMarkerStreamer) ensureCurrentLocked(ctx context.Context) error {
 	}
 	s.current = streamer
 	setStreamerModelName(s.current, s.modelName)
-	setStreamerTurnUsage(s.current, s.turnInputTokens, s.turnOutputTokens)
+	setStreamerTurnUsage(s.current, s.turnUsage)
 	return nil
 }
 
@@ -997,8 +1004,8 @@ func (s *finalizeHookStreamer) SetModelName(modelName string) {
 	setStreamerModelName(s.Streamer, strings.TrimSpace(modelName))
 }
 
-func (s *finalizeHookStreamer) SetTurnUsage(inputTokens, outputTokens int) {
-	setStreamerTurnUsage(s.Streamer, inputTokens, outputTokens)
+func (s *finalizeHookStreamer) SetTurnUsage(usage bus.TokenUsage) {
+	setStreamerTurnUsage(s.Streamer, usage)
 }
 
 func (s *finalizeHookStreamer) runFinalizeHook(ctx context.Context, content string) {
@@ -1554,8 +1561,13 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 				chunks = splitOutboundMessageContent(msg, maxLen)
 			}
 
-			// Step 3: Send all chunks
-			for _, chunk := range chunks {
+			// Step 3: Send all chunks with a minimum gap between them so a
+			// long reply does not consume the platform's per-chat budget in
+			// one burst.
+			for i, chunk := range chunks {
+				if i > 0 && !waitChunkSpacing(ctx) {
+					return
+				}
 				chunkMsg := msg
 				chunkMsg.Content = chunk
 				m.sendWithRetry(ctx, name, w, chunkMsg)
@@ -1601,6 +1613,28 @@ func splitOutboundMessageContent(msg bus.OutboundMessage, maxLen int) []string {
 		}
 	}
 	return []string{msg.Content}
+}
+
+// rateLimitBackoff returns the wait before retrying a rate-limited send.
+// Channels that report the platform-requested retry window get it honored,
+// capped so a long server-side ban cannot stall a worker indefinitely.
+func rateLimitBackoff(err error) time.Duration {
+	delay := rateLimitDelay
+	if requested, ok := RateLimitRetryAfter(err); ok {
+		delay = requested
+	}
+	return min(delay, maxRateLimitDelay)
+}
+
+// waitChunkSpacing pauses between chunks of the same logical message.
+// Returns false when the context ends before the pause completes.
+func waitChunkSpacing(ctx context.Context) bool {
+	select {
+	case <-time.After(chunkSpacing):
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // sendWithRetry sends a message through the channel with rate limiting and
@@ -1656,10 +1690,10 @@ func (m *Manager) sendWithRetry(
 			break
 		}
 
-		// Rate limit error — fixed delay
+		// Rate limit error — honor the platform-requested delay when present
 		if errors.Is(lastErr, ErrRateLimit) {
 			select {
-			case <-time.After(rateLimitDelay):
+			case <-time.After(rateLimitBackoff(lastErr)):
 				continue
 			case <-ctx.Done():
 				return nil, false
@@ -1856,10 +1890,10 @@ func (m *Manager) sendMediaWithRetry(
 			break
 		}
 
-		// Rate limit error — fixed delay
+		// Rate limit error — honor the platform-requested delay when present
 		if errors.Is(lastErr, ErrRateLimit) {
 			select {
-			case <-time.After(rateLimitDelay):
+			case <-time.After(rateLimitBackoff(lastErr)):
 				continue
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -2185,7 +2219,10 @@ func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) erro
 		maxLen = mlp.MaxMessageLength()
 	}
 	if chunks := splitOutboundMessageContent(msg, maxLen); len(chunks) > 1 {
-		for _, chunk := range chunks {
+		for i, chunk := range chunks {
+			if i > 0 && !waitChunkSpacing(ctx) {
+				return ctx.Err()
+			}
 			chunkMsg := msg
 			chunkMsg.Content = chunk
 			m.sendWithRetry(ctx, channelName, w, chunkMsg)

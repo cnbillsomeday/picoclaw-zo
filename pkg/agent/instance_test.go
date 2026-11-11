@@ -6,11 +6,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
+	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
 
 type countingStatefulProvider struct {
@@ -79,6 +81,37 @@ func TestNewAgentInstance_UsesDefaultsTemperatureAndMaxTokens(t *testing.T) {
 	}
 	if agent.Temperature != 1.0 {
 		t.Fatalf("Temperature = %f, want %f", agent.Temperature, 1.0)
+	}
+}
+
+func TestNewAgentInstance_ConfiguresArtifactRetention(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         1234,
+				MaxToolIterations: 5,
+			},
+		},
+	}
+	cfg.Tools.ArtifactMaxFiles = 7
+	cfg.Tools.ArtifactMaxAgeHours = 2
+
+	oldMaxAge, oldMaxFiles := toolshared.ArtifactRetention()
+	t.Cleanup(func() { toolshared.SetArtifactRetention(oldMaxAge, oldMaxFiles) })
+
+	provider := &mockProvider{}
+	NewAgentInstance(nil, &cfg.Agents.Defaults, cfg, provider)
+
+	maxAge, maxFiles := toolshared.ArtifactRetention()
+	if maxAge != 2*time.Hour {
+		t.Fatalf("artifact max age = %s, want 2h", maxAge)
+	}
+	if maxFiles != 7 {
+		t.Fatalf("artifact max files = %d, want 7", maxFiles)
 	}
 }
 
@@ -1371,5 +1404,52 @@ func TestNewAgentInstance_ExplicitEmptyToolsFieldBlocksAllTools(t *testing.T) {
 				t.Fatal("expected list_dir to be blocked by explicit empty tools field")
 			}
 		})
+	}
+}
+
+func TestNewAgentInstance_RegistersMemoryToolWhenEnabled(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		cfg := &config.Config{Agents: config.AgentsConfig{Defaults: config.AgentDefaults{
+			Workspace: t.TempDir(),
+			ModelName: "test-model",
+			Memory:    config.MemoryConfig{Enabled: enabled},
+		}}}
+		agent := NewAgentInstance(nil, &cfg.Agents.Defaults, cfg, &mockProvider{})
+		if _, ok := agent.Tools.Get("memory"); ok != enabled {
+			t.Errorf("memory_enabled=%v: tool registered = %v", enabled, ok)
+		}
+	}
+}
+
+func TestNewAgentInstance_FileToolsLeaveMemoryFilesToTheMemoryTool(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		for name, args := range map[string]map[string]any{
+			"write_file":  {"content": "x"},
+			"append_file": {"content": "x"},
+		} {
+			// Each tool gets its own workspace: append_file creates MEMORY.md,
+			// so sharing it would make write_file fail with "already exists"
+			// depending on map iteration order.
+			ws := t.TempDir()
+			cfg := &config.Config{Agents: config.AgentsConfig{Defaults: config.AgentDefaults{
+				Workspace: ws,
+				ModelName: "test-model",
+				Memory:    config.MemoryConfig{Enabled: enabled},
+			}}}
+			cfg.Tools.WriteFile.Enabled = true
+			cfg.Tools.AppendFile.Enabled = true
+			cfg.Tools.EditFile.Enabled = true
+			agent := NewAgentInstance(nil, &cfg.Agents.Defaults, cfg, &mockProvider{})
+
+			tool, ok := agent.Tools.Get(name)
+			if !ok {
+				t.Fatalf("%s not registered", name)
+			}
+			args["path"] = filepath.Join(ws, "memory", "MEMORY.md")
+			res := tool.Execute(context.Background(), args)
+			if res.IsError != enabled {
+				t.Errorf("memory_enabled=%v: %s on MEMORY.md refused = %v (%s)", enabled, name, res.IsError, res.ForLLM)
+			}
+		}
 	}
 }

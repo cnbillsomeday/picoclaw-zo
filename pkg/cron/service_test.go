@@ -46,6 +46,13 @@ func setupService(t *testing.T, handler JobHandler) (*CronService, string) {
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, fmt.Sprintf("test_cron_%d.json", time.Now().UnixNano()))
 	cs := NewCronService(tmpFile, handler)
+	// Stop the scheduler and drain in-flight handlers before t.TempDir removes
+	// the directory: a run that persists its state afterwards recreates the
+	// store file and makes the cleanup fail with "directory not empty".
+	t.Cleanup(func() {
+		cs.Stop()
+		waitAllIdle(t, cs)
+	})
 	return cs, tmpFile
 }
 
@@ -718,7 +725,6 @@ func newBlockingService(t *testing.T) (cs *CronService, calls *atomic.Int32, sta
 	started = make(chan struct{}, 16)
 	gate := make(chan struct{})
 	release = sync.OnceFunc(func() { close(gate) })
-	t.Cleanup(release) // never leave handlers blocked if the test fails early
 
 	cs, _ = setupService(t, func(job *CronJob) (string, error) {
 		calls.Add(1)
@@ -726,6 +732,9 @@ func newBlockingService(t *testing.T) (cs *CronService, calls *atomic.Int32, sta
 		<-gate
 		return "ok", nil
 	})
+	// Registered after setupService so it runs before the service's cleanup,
+	// which waits for in-flight handlers to drain.
+	t.Cleanup(release) // never leave handlers blocked if the test fails early
 	if err := cs.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
@@ -742,6 +751,23 @@ func waitStarted(t *testing.T, started <-chan struct{}) {
 	}
 }
 
+func waitAllIdle(t *testing.T, cs *CronService) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		cs.mu.RLock()
+		busy := len(cs.inFlight)
+		cs.mu.RUnlock()
+		if busy == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d job handler(s) still running after Stop", busy)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func waitIdle(t *testing.T, cs *CronService, jobID string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -755,6 +781,93 @@ func waitIdle(t *testing.T, cs *CronService, jobID string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("job never finished")
+}
+
+func TestCronService_RunJobRecordsHistory(t *testing.T) {
+	cs, _ := setupService(t, func(job *CronJob) (string, error) {
+		return "ok", nil
+	})
+	if err := cs.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer cs.Stop()
+
+	everyMS := time.Hour.Milliseconds()
+	job, err := cs.AddJob(
+		"History",
+		CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"msg",
+		"cli",
+		"direct",
+	)
+	if err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+
+	for range cronRunHistoryLimit + 2 {
+		if err := cs.RunJob(job.ID); err != nil {
+			t.Fatalf("RunJob failed: %v", err)
+		}
+		waitIdle(t, cs, job.ID)
+	}
+
+	got, ok := cs.GetJob(job.ID)
+	if !ok {
+		t.Fatal("job not found")
+	}
+	if len(got.State.RunHistory) != cronRunHistoryLimit {
+		t.Fatalf("history length = %d, want %d", len(got.State.RunHistory), cronRunHistoryLimit)
+	}
+	for i, record := range got.State.RunHistory {
+		if record.Status != "ok" {
+			t.Fatalf("history[%d].status = %q, want ok", i, record.Status)
+		}
+		if record.RunAtMS <= 0 {
+			t.Fatalf("history[%d].runAtMs = %d, want positive", i, record.RunAtMS)
+		}
+		if record.DurationMS < 0 {
+			t.Fatalf("history[%d].durationMs = %d, want non-negative", i, record.DurationMS)
+		}
+	}
+}
+
+func TestCronService_RunJobRecordsErrorHistory(t *testing.T) {
+	cs, _ := setupService(t, func(job *CronJob) (string, error) {
+		return "", errors.New("boom")
+	})
+	if err := cs.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer cs.Stop()
+
+	everyMS := time.Hour.Milliseconds()
+	job, err := cs.AddJob(
+		"Failing",
+		CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"msg",
+		"cli",
+		"direct",
+	)
+	if err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+
+	if err := cs.RunJob(job.ID); err != nil {
+		t.Fatalf("RunJob failed: %v", err)
+	}
+	waitIdle(t, cs, job.ID)
+
+	got, ok := cs.GetJob(job.ID)
+	if !ok {
+		t.Fatal("job not found")
+	}
+	if len(got.State.RunHistory) != 1 {
+		t.Fatalf("history length = %d, want 1", len(got.State.RunHistory))
+	}
+	record := got.State.RunHistory[0]
+	if record.Status != "error" || record.Error != "boom" {
+		t.Fatalf("history record = %+v, want error/boom", record)
+	}
 }
 
 func TestCronService_RunJobExecutesWithoutTouchingSchedule(t *testing.T) {

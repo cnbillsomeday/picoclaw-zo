@@ -149,7 +149,7 @@ func TestIntegrationChannelServerTurnEnd(t *testing.T) {
 			ChatID:  "bob",
 			TurnID:  "turn-integration",
 		},
-		Payload: testLLMPayload{TokensIn: 12, TokensOut: 34},
+		Payload: testLLMPayload{InputTokens: 12, OutputTokens: 34},
 	}); res.Closed {
 		t.Fatal("event bus is closed")
 	}

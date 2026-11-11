@@ -20,6 +20,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
 	fstools "github.com/sipeed/picoclaw/pkg/tools/fs"
+	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
 
 // AgentInstance represents a fully configured agent with its own workspace,
@@ -100,6 +101,7 @@ func NewAgentInstance(
 		// Keep the subprocess isolation runtime aligned with the latest loaded config
 		// before any tools or providers start spawning child processes.
 		isolation.Configure(cfg)
+		toolshared.SetArtifactRetention(cfg.Tools.GetArtifactMaxAge(), cfg.Tools.GetArtifactMaxFiles())
 	}
 
 	workspace := resolveAgentWorkspace(agentCfg, defaults)
@@ -150,16 +152,27 @@ func NewAgentInstance(
 			))
 		}
 	}
+	// MEMORY.md and USER.md belong to the memory tool, which enforces their
+	// limits; the file tools must not be a way around it.
+	var memoryFiles []string
+	if defaults.Memory.Enabled {
+		memoryFiles = tools.MemoryFilePaths(workspace)
+	}
 	if cfg.Tools.IsToolEnabled("edit_file") {
-		toolsRegistry.Register(fstools.NewEditFileTool(workspace, restrict, allowWritePaths))
+		editTool := fstools.NewEditFileTool(workspace, restrict, allowWritePaths)
+		editTool.SetMemoryFiles(memoryFiles)
+		toolsRegistry.Register(editTool)
 	}
 	if cfg.Tools.IsToolEnabled("append_file") {
-		toolsRegistry.Register(fstools.NewAppendFileTool(workspace, restrict, allowWritePaths))
+		appendTool := fstools.NewAppendFileTool(workspace, restrict, allowWritePaths)
+		appendTool.SetMemoryFiles(memoryFiles)
+		toolsRegistry.Register(appendTool)
 	}
 	// Build write_file's copy from the registered editors so it steers the agent
 	// to edit_file/append_file only when those tools are actually available.
 	if cfg.Tools.IsToolEnabled("write_file") {
 		writeTool := fstools.NewWriteFileTool(workspace, restrict, allowWritePaths)
+		writeTool.SetMemoryFiles(memoryFiles)
 		var altTools []string
 		if toolsRegistry.HasRegistered("append_file") {
 			altTools = append(altTools, "append_file")
@@ -195,7 +208,18 @@ func NewAgentInstance(
 			mcpDiscoveryActive && cfg.Tools.MCP.Discovery.UseBM25,
 			mcpDiscoveryActive && cfg.Tools.MCP.Discovery.UseRegex,
 		).
-		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker)
+		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker).
+		WithMemoryConfig(defaults.Memory).
+		WithIsolation(
+			cfg.Isolation,
+			defaults.RestrictToWorkspace,
+			defaults.AllowReadOutsideWorkspace,
+		)
+	if defaults.Memory.Enabled {
+		toolsRegistry.Register(tools.NewMemoryTool(
+			workspace, defaults.Memory.GetMemoryCharLimit(), defaults.Memory.GetUserCharLimit(),
+		))
+	}
 
 	agentID := routing.DefaultAgentID
 	agentName := ""

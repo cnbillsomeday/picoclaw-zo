@@ -308,6 +308,17 @@ func TestDefaultConfig_MaxInlineResultChars(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_ArtifactRetention(t *testing.T) {
+	cfg := DefaultConfig()
+	if got := cfg.Tools.GetArtifactMaxFiles(); got != DefaultArtifactMaxFiles {
+		t.Fatalf("DefaultConfig().Tools.GetArtifactMaxFiles() = %d, want %d", got, DefaultArtifactMaxFiles)
+	}
+	if got := cfg.Tools.GetArtifactMaxAge(); got != DefaultArtifactMaxAgeHours*time.Hour {
+		t.Fatalf("DefaultConfig().Tools.GetArtifactMaxAge() = %s, want %s",
+			got, DefaultArtifactMaxAgeHours*time.Hour)
+	}
+}
+
 func TestConfig_TruncationLimits(t *testing.T) {
 	cfg := DefaultConfig()
 	if got := cfg.Tools.Exec.GetMaxOutputChars(); got != DefaultExecMaxOutputChars {
@@ -764,6 +775,52 @@ func TestLoadConfig_MaxInlineResultCharsDefaultsWhenAbsent(t *testing.T) {
 			got,
 			DefaultMaxInlineResultChars,
 		)
+	}
+}
+
+func TestLoadConfig_ArtifactRetention(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	raw := `{
+		"tools": {
+			"artifact_max_files": 12,
+			"artifact_max_age_hours": 3
+		}
+	}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("WriteFile(configPath): %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+	if got := cfg.Tools.GetArtifactMaxFiles(); got != 12 {
+		t.Fatalf("cfg.Tools.GetArtifactMaxFiles() = %d, want 12", got)
+	}
+	if got := cfg.Tools.GetArtifactMaxAge(); got != 3*time.Hour {
+		t.Fatalf("cfg.Tools.GetArtifactMaxAge() = %s, want 3h", got)
+	}
+}
+
+func TestLoadConfig_ArtifactRetentionDefaultsWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	raw := `{"tools": {"exec": {"enabled": true}}}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("WriteFile(configPath): %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+	if got := cfg.Tools.GetArtifactMaxFiles(); got != DefaultArtifactMaxFiles {
+		t.Fatalf("cfg.Tools.GetArtifactMaxFiles() = %d, want default %d", got, DefaultArtifactMaxFiles)
+	}
+	if got := cfg.Tools.GetArtifactMaxAge(); got != DefaultArtifactMaxAgeHours*time.Hour {
+		t.Fatalf("cfg.Tools.GetArtifactMaxAge() = %s, want default %s",
+			got, DefaultArtifactMaxAgeHours*time.Hour)
 	}
 }
 
@@ -3764,5 +3821,33 @@ func TestSaveConfig_PreservesDisabledLLMRetryOptions(t *testing.T) {
 			"llm_retry_on_finish_reasons = %v after reload, want empty",
 			loaded.Agents.Defaults.LLMRetryOnFinishReasons,
 		)
+	}
+}
+
+func TestMemoryConfigDefaultsAndOverrides(t *testing.T) {
+	load := func(t *testing.T, body string) MemoryConfig {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg.Agents.Defaults.Memory
+	}
+
+	// A config written before the memory block existed keeps memory on.
+	m := load(t, `{"version": 3, "agents": {"defaults": {"model_name": "x"}}}`)
+	if !m.Enabled || !m.DailyNotesEnabled || m.GetMemoryCharLimit() != 2200 || m.GetUserCharLimit() != 1375 ||
+		m.GetRecentDailyNotesCount() != 3 || m.GetDailyNotesCharLimit() != 1000 {
+		t.Errorf("unexpected defaults: %+v", m)
+	}
+
+	m = load(t, `{"version": 3, "agents": {"defaults": {"model_name": "x",
+		"memory": {"memory_enabled": false, "memory_char_limit": 500, "recent_daily_notes_count": 2}}}}`)
+	if m.Enabled || m.GetMemoryCharLimit() != 500 || m.GetRecentDailyNotesCount() != 2 || m.GetUserCharLimit() != 1375 {
+		t.Errorf("unexpected overrides: %+v", m)
 	}
 }

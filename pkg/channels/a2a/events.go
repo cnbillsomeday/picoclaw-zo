@@ -103,8 +103,8 @@ func (c *Channel) recordLLMUsage(turnID string, payload any) {
 		// would leak memory because no turn.end can ever consume it.
 		return
 	}
-	in := payloadIntField(payload, "TokensIn")
-	out := payloadIntField(payload, "TokensOut")
+	in := payloadIntField(payload, "InputTokens")
+	out := payloadIntField(payload, "OutputTokens")
 	now := c.currentTime()
 	c.usageMu.Lock()
 	defer c.usageMu.Unlock()
