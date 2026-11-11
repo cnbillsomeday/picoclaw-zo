@@ -1936,3 +1936,22 @@ func TestCronTool_DiceGateSkipsWithoutMarkingFailure(t *testing.T) {
 		t.Fatalf("没掷中不该跑 agent，却收到 %q", executor.lastPrompt)
 	}
 }
+
+func TestPickRandomA2APeer(t *testing.T) {
+	tool := &CronTool{a2aPeers: []string{"vu", "wei", "ao"}}
+	seen := map[string]bool{}
+	for i := 0; i < 60; i++ {
+		peer := tool.pickRandomA2APeer()
+		if peer == "" {
+			t.Fatal("expected a peer")
+		}
+		seen[peer] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("expected varied picks, got %v", seen)
+	}
+	empty := &CronTool{}
+	if got := empty.pickRandomA2APeer(); got != "" {
+		t.Fatalf("empty allowlist should return empty, got %q", got)
+	}
+}

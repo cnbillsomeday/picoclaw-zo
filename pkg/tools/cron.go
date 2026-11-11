@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -35,6 +36,9 @@ type CronTool struct {
 	allowCommand          bool
 	execEnabled           bool
 	commandAllowedRemotes []string
+	// a2aPeers is the allowlisted A2A peer list (own slug excluded), used to
+	// resolve the "@random" cron recipient.
+	a2aPeers []string
 }
 
 // NewCronTool creates a new CronTool
@@ -64,6 +68,24 @@ func NewCronTool(
 	if execTool != nil {
 		execTool.SetTimeout(execTimeout)
 	}
+
+	var a2aPeers []string
+	if config != nil {
+		if ch := config.Channels.Get("a2a"); ch != nil && ch.Enabled {
+			var settings struct {
+				AgentSlug string `json:"agent_slug"`
+			}
+			_ = json.Unmarshal(ch.Settings, &settings)
+			self := strings.TrimSpace(settings.AgentSlug)
+			for _, peer := range ch.AllowFrom {
+				peer = strings.TrimSpace(peer)
+				if peer != "" && peer != self {
+					a2aPeers = append(a2aPeers, peer)
+				}
+			}
+		}
+	}
+
 	return &CronTool{
 		cronService:           cronService,
 		executor:              executor,
@@ -72,6 +94,7 @@ func NewCronTool(
 		allowCommand:          allowCommand,
 		execEnabled:           execEnabled,
 		commandAllowedRemotes: commandAllowedRemotes,
+		a2aPeers:              a2aPeers,
 	}, nil
 }
 
@@ -729,6 +752,15 @@ func (t *CronTool) runJob(ctx context.Context, args map[string]any) *ToolResult 
 // command jobs) and reports its outcome. A non-nil error means the job did not
 // do its work; the cron service stores it in the job state, so a failed run no
 // longer looks like a successful one.
+// pickRandomA2APeer returns a random allowlisted A2A peer, or "" when the
+// allowlist is empty (the caller will then fall back to its defaults).
+func (t *CronTool) pickRandomA2APeer() string {
+	if t == nil || len(t.a2aPeers) == 0 {
+		return ""
+	}
+	return t.a2aPeers[rand.Intn(len(t.a2aPeers))]
+}
+
 func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) (string, error) {
 	// 带骰子的任务先掷一次：没掷中就直接跳过，绝不把「这次不开口」记成失败。
 	if job != nil && job.Payload.Dice != nil && job.Payload.Dice.Enabled {
@@ -745,6 +777,10 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) (string, e
 	// Get channel/chatID from job payload
 	channel := job.Payload.Channel
 	chatID := job.Payload.To
+
+	if channel == "a2a" && strings.TrimSpace(chatID) == "@random" {
+		chatID = t.pickRandomA2APeer()
+	}
 
 	// Default values if not set
 	if channel == "" {
