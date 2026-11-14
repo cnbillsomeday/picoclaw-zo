@@ -17,6 +17,7 @@ type AudioModelTranscriber struct {
 	provider providers.LLMProvider
 	modelID  string
 	prompt   string
+	noPrompt bool
 }
 
 const (
@@ -34,6 +35,8 @@ func NewAudioModelTranscriber(modelCfg *config.ModelConfig) *AudioModelTranscrib
 		"model":       modelCfg.Model,
 	})
 
+	protocol, _ := providers.ExtractProtocol(modelCfg)
+
 	provider, modelID, err := providers.CreateProviderFromConfig(modelCfg)
 	if err != nil {
 		logger.ErrorCF("voice", "Failed to create audio model provider", map[string]any{"error": err})
@@ -44,6 +47,7 @@ func NewAudioModelTranscriber(modelCfg *config.ModelConfig) *AudioModelTranscrib
 		provider: provider,
 		modelID:  modelID,
 		prompt:   defaultTranscriptionPrompt,
+		noPrompt: protocol == "mimo",
 	}
 }
 
@@ -65,10 +69,19 @@ func (t *AudioModelTranscriber) Transcribe(ctx context.Context, audioFilePath st
 		return nil, err
 	}
 
+	content := t.prompt
+	if t.noPrompt {
+		// MiMo's ASR endpoint rejects any text part in the request: "ASR request
+		// must not include text parts; text prompt is injected by the gateway".
+		// The transcription prompt is only useful for chat-style audio models, so
+		// send a bare input_audio message for providers that require it.
+		content = ""
+	}
+
 	resp, err := t.provider.Chat(ctx, []providers.Message{
 		{
 			Role:    "user",
-			Content: t.prompt,
+			Content: content,
 			Media: []string{
 				fmt.Sprintf("data:audio/%s;base64,%s", format, base64.StdEncoding.EncodeToString(audioBytes)),
 			},

@@ -44,3 +44,29 @@ func TestMimoVoiceDetection(t *testing.T) {
 	}
 	t.Logf("tts provider: %s", tp.Name())
 }
+
+func TestMimoNoPromptTranscriber(t *testing.T) {
+	cfg := &config.Config{
+		ModelList: []*config.ModelConfig{
+			{
+				ModelName: "mimo-asr",
+				Provider:  "mimo",
+				Model:     "mimo-v2.5-asr",
+				APIBase:   "https://api.xiaomimimo.com/v1",
+				APIKeys:   config.SimpleSecureStrings("sk-test"),
+			},
+		},
+		Voice: config.VoiceConfig{ModelName: "mimo-asr"},
+	}
+	tr := DetectTranscriber(cfg)
+	if tr == nil {
+		t.Fatalf("DetectTranscriber nil for mimo")
+	}
+	at, ok := tr.(*AudioModelTranscriber)
+	if !ok {
+		t.Fatalf("transcriber is %T, want *AudioModelTranscriber", tr)
+	}
+	if !at.noPrompt {
+		t.Fatal("mimo transcriber must send no text prompt")
+	}
+}
