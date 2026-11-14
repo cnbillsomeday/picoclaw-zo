@@ -147,6 +147,9 @@ func transcodeAudio(ctx context.Context, src, format string) (string, error) {
 		return "", fmt.Errorf("transcoding %q audio needs ffmpeg, which is not installed", format)
 	}
 
+	if err := os.MkdirAll(media.TempDir(), 0o700); err != nil {
+		return "", fmt.Errorf("failed to create media temp dir: %w", err)
+	}
 	outPath := filepath.Join(media.TempDir(), fmt.Sprintf("asr-%d.%s", time.Now().UnixNano(), format))
 	args := []string{"-y", "-loglevel", "error", "-i", src, "-ar", "16000", "-ac", "1"}
 	if format == "mp3" {
