@@ -1021,6 +1021,22 @@ func stopGatewayLocked() (int, error) {
 	}
 
 	logger.InfoC("gateway", fmt.Sprintf("Sent stop signal to gateway (PID: %d)", pid))
+
+	// Wait for the process to actually exit before returning. Without this the
+	// launcher's status poller can immediately re-attach to the still-dying
+	// process (gateway.cmd is nil, pid file still points at it), after which
+	// nothing ever starts a new gateway: the "stop/start leaves 18790 dead"
+	// race.
+	if !waitForGatewayProcessExit(gateway.cmd, gatewayRestartGracePeriod) {
+		if runtime.GOOS != "windows" {
+			_ = gateway.cmd.Process.Signal(syscall.SIGKILL)
+		}
+		_ = waitForGatewayProcessExit(gateway.cmd, gatewayRestartForceKillWindow)
+	}
+	if ppid.RemovePidFileIfPID(globalConfigDir(), pid) {
+		logger.InfoC("gateway", fmt.Sprintf("Removed pid file for stopped gateway (PID: %d)", pid))
+	}
+
 	gateway.cmd = nil
 	gateway.owned = false
 	gateway.bootDefaultModel = ""

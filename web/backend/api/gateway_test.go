@@ -2679,3 +2679,58 @@ func TestModelConfigsMatchingSignatureRefUsesResolverScore(t *testing.T) {
 		t.Fatalf("matches = %#v, want resolver-selected index 1", matches)
 	}
 }
+
+func TestStopGatewayLockedWaitsAndRemovesPidFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("signal semantics differ on windows")
+	}
+	home := t.TempDir()
+	t.Setenv("PICOCLAW_HOME", home)
+
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper process: %v", err)
+	}
+	pid := cmd.Process.Pid
+
+	pidPath := filepath.Join(home, ".picoclaw.pid")
+	body, err := json.Marshal(map[string]any{"pid": pid, "token": "t", "version": "test", "port": 18790, "host": "127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pidPath, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A real owned gateway has a waiter reaping it; without one the child stays
+	// a zombie and never looks "dead" to Signal(0).
+	go func() { _ = cmd.Wait() }()
+
+	gateway.mu.Lock()
+	oldCmd, oldOwned, oldStatus := gateway.cmd, gateway.owned, gateway.runtimeStatus
+	gateway.cmd = cmd
+	gateway.owned = true
+	gateway.mu.Unlock()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		gateway.mu.Lock()
+		gateway.cmd, gateway.owned, gateway.runtimeStatus = oldCmd, oldOwned, oldStatus
+		gateway.mu.Unlock()
+	})
+
+	gateway.mu.Lock()
+	stoppedPid, stopErr := stopGatewayLocked()
+	gateway.mu.Unlock()
+	if stopErr != nil {
+		t.Fatalf("stopGatewayLocked() error = %v", stopErr)
+	}
+	if stoppedPid != pid {
+		t.Fatalf("stopped pid = %d, want %d", stoppedPid, pid)
+	}
+	if isCmdProcessAliveLocked(cmd) {
+		t.Fatal("gateway process is still alive after stop")
+	}
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Fatalf("pid file was not removed: %v", err)
+	}
+}
