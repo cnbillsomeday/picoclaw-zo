@@ -35,7 +35,7 @@ func providerFromModelConfig(mc *config.ModelConfig) TTSProvider {
 
 	switch protocol {
 	case "mimo":
-		return NewMimoTTSProvider(mc.APIKey(), providers.ResolveAPIBase(mc), modelID, mc.Proxy)
+		return NewMimoTTSProviderWithVoice(mc.APIKey(), providers.ResolveAPIBase(mc), modelID, mc.Proxy, openAITTSOptionsFromModelConfig(mc).Voice)
 	default:
 		return NewOpenAITTSProviderWithOptions(
 			mc.APIKey(),

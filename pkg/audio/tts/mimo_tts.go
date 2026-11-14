@@ -25,6 +25,14 @@ type MimoTTSProvider struct {
 }
 
 func NewMimoTTSProvider(apiKey string, apiBase string, model string, proxyURL string) *MimoTTSProvider {
+	return NewMimoTTSProviderWithVoice(apiKey, apiBase, model, proxyURL, "")
+}
+
+// NewMimoTTSProviderWithVoice builds a MiMo TTS provider with an optional
+// voice override. MiMo's official API rejects the historic default_zh voice
+// and instead accepts names such as "mimo_default", "冰糖", "茉莉", "苏打".
+// Passing a non-empty voice here lets configuration pick a valid one.
+func NewMimoTTSProviderWithVoice(apiKey string, apiBase string, model string, proxyURL string, voice string) *MimoTTSProvider {
 	if apiBase == "" {
 		apiBase = "https://api.xiaomimimo.com/v1/chat/completions"
 	} else {
@@ -64,6 +72,9 @@ func NewMimoTTSProvider(apiKey string, apiBase string, model string, proxyURL st
 	if model == "" {
 		model = "mimo-v2-tts"
 	}
+	if voice == "" {
+		voice = "default_zh" // historic default; override with a valid MiMo voice via config
+	}
 
 	client := &http.Client{Timeout: 60 * time.Second}
 	if proxyURL != "" {
@@ -80,7 +91,7 @@ func NewMimoTTSProvider(apiKey string, apiBase string, model string, proxyURL st
 	return &MimoTTSProvider{
 		apiKey:     apiKey,
 		apiBase:    apiBase,
-		voice:      "default_zh", // mimo_default now seems to be an alias for default_en, which is not working for Chinese TTS. default_zh seems to work fine with both English and Chinese, and is likely the intended default for TTS.
+		voice:      voice,
 		format:     "mp3",
 		model:      model,
 		httpClient: client,
