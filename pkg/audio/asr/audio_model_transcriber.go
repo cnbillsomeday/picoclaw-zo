@@ -1,14 +1,20 @@
 package asr
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/isolation"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
@@ -18,6 +24,10 @@ type AudioModelTranscriber struct {
 	modelID  string
 	prompt   string
 	noPrompt bool
+	// transcodeTo, when set, converts the audio to this format before sending.
+	// MiMo's ASR endpoint only accepts wav and mp3, while chat channels commonly
+	// deliver ogg/opus voice notes.
+	transcodeTo string
 }
 
 const (
@@ -43,12 +53,17 @@ func NewAudioModelTranscriber(modelCfg *config.ModelConfig) *AudioModelTranscrib
 		return nil
 	}
 
-	return &AudioModelTranscriber{
-		provider: provider,
-		modelID:  modelID,
-		prompt:   defaultTranscriptionPrompt,
-		noPrompt: protocol == "mimo",
+	tr := &AudioModelTranscriber{
+		provider:    provider,
+		modelID:     modelID,
+		prompt:      defaultTranscriptionPrompt,
+		noPrompt:    protocol == "mimo",
+		transcodeTo: "",
 	}
+	if protocol == "mimo" {
+		tr.transcodeTo = "mp3"
+	}
+	return tr
 }
 
 func (t *AudioModelTranscriber) Transcribe(ctx context.Context, audioFilePath string) (*TranscriptionResponse, error) {
@@ -57,16 +72,30 @@ func (t *AudioModelTranscriber) Transcribe(ctx context.Context, audioFilePath st
 		"model":      t.modelID,
 	})
 
-	audioBytes, err := os.ReadFile(audioFilePath)
-	if err != nil {
-		logger.ErrorCF("voice", "Failed to read audio file", map[string]any{"path": audioFilePath, "error": err})
-		return nil, fmt.Errorf("failed to read audio file: %w", err)
-	}
-
 	format, err := utils.AudioFormat(audioFilePath)
 	if err != nil {
 		logger.ErrorCF("voice", "Failed to detect audio format", map[string]any{"path": audioFilePath, "error": err})
 		return nil, err
+	}
+
+	sourcePath := audioFilePath
+	if t.transcodeTo != "" && format != t.transcodeTo {
+		converted, cerr := transcodeAudio(ctx, audioFilePath, t.transcodeTo)
+		if cerr != nil {
+			logger.ErrorCF("voice", "Failed to transcode audio for transcription", map[string]any{
+				"path": audioFilePath, "from": format, "to": t.transcodeTo, "error": cerr,
+			})
+			return nil, cerr
+		}
+		defer os.Remove(converted)
+		sourcePath = converted
+		format = t.transcodeTo
+	}
+
+	audioBytes, err := os.ReadFile(sourcePath)
+	if err != nil {
+		logger.ErrorCF("voice", "Failed to read audio file", map[string]any{"path": sourcePath, "error": err})
+		return nil, fmt.Errorf("failed to read audio file: %w", err)
 	}
 
 	content := t.prompt
@@ -105,4 +134,35 @@ func (t *AudioModelTranscriber) Transcribe(ctx context.Context, audioFilePath st
 
 func (t *AudioModelTranscriber) Name() string {
 	return "audio-model"
+}
+
+const audioTranscodeTimeout = 60 * time.Second
+
+// transcodeAudio converts src to the requested container with ffmpeg, which is
+// the only decoder available across the supported platforms. The output lives
+// in the managed media temp dir and the caller removes it.
+func transcodeAudio(ctx context.Context, src, format string) (string, error) {
+	bin, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return "", fmt.Errorf("transcoding %q audio needs ffmpeg, which is not installed", format)
+	}
+
+	outPath := filepath.Join(media.TempDir(), fmt.Sprintf("asr-%d.%s", time.Now().UnixNano(), format))
+	args := []string{"-y", "-loglevel", "error", "-i", src, "-ar", "16000", "-ac", "1"}
+	if format == "mp3" {
+		args = append(args, "-b:a", "32k")
+	}
+	args = append(args, outPath)
+
+	runCtx, cancel := context.WithTimeout(ctx, audioTranscodeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, bin, args...)
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+	if err := isolation.Run(cmd); err != nil {
+		os.Remove(outPath)
+		return "", fmt.Errorf("ffmpeg transcode failed: %w: %s", err, strings.TrimSpace(combined.String()))
+	}
+	return outPath, nil
 }

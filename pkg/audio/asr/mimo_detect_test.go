@@ -69,4 +69,8 @@ func TestMimoNoPromptTranscriber(t *testing.T) {
 	if !at.noPrompt {
 		t.Fatal("mimo transcriber must send no text prompt")
 	}
+	// MiMo only accepts wav/mp3, while chat channels deliver ogg/opus notes.
+	if at.transcodeTo != "mp3" {
+		t.Fatalf("mimo transcriber transcodeTo = %q, want mp3", at.transcodeTo)
+	}
 }
