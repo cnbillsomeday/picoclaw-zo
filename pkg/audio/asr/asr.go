@@ -34,7 +34,7 @@ func supportsAudioTranscription(modelCfg *config.ModelConfig) bool {
 		"ollama", "moonshot", "shengsuanyun", "deepseek", "cerebras",
 		"vivgrid", "volcengine", "vllm", "qwen-portal", "qwen-intl", "qwen-us",
 		"mistral", "avian", "minimax", "longcat", "modelscope", "novita",
-		"alibaba-coding", "zai":
+		"alibaba-coding", "zai", "mimo":
 		// These protocols all go through the OpenAI-compatible or Azure provider path in
 		// providers.CreateProviderFromConfig, so they are the only ones that can supply
 		// the audio media payload shape expected by NewAudioModelTranscriber.
