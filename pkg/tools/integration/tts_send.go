@@ -2,9 +2,14 @@ package integrationtools
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/audio/tts"
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 )
 
@@ -71,11 +76,32 @@ func (t *SendTTSTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 		return ErrorResult(err.Error()).WithError(err)
 	}
 
-	// Return with ForUser set to original text, Media containing the audio ref,
-	// and mark as ResponseHandled so the audio is sent immediately without LLM intervention.
+	// Chat apps only render a voice bubble for Ogg/Opus (Telegram SendVoice,
+	// Feishu file_type=opus); TTS providers return mp3, which arrives as a file
+	// attachment. Convert here so tool-triggered speech looks like a voice note.
+	if srcPath, resolveErr := t.mediaStore.Resolve(ref); resolveErr == nil {
+		if opusPath, transcodeErr := tts.TranscodeToOpus(ctx, srcPath); transcodeErr == nil {
+			mediaScope := fmt.Sprintf("tool:send_tts:%s:%s:%d", channel, chatID, time.Now().UnixNano())
+			if opusRef, storeErr := t.mediaStore.Store(opusPath, media.MediaMeta{
+				Filename:    filepath.Base(opusPath),
+				ContentType: "audio/ogg",
+				Source:      "tool:send_tts",
+			}, mediaScope); storeErr == nil {
+				ref = opusRef
+			} else {
+				_ = os.Remove(opusPath)
+				logger.WarnCF("voice-tts", "Failed to store opus voice note", map[string]any{"error": storeErr.Error()})
+			}
+		} else {
+			logger.WarnCF("voice-tts", "Sending TTS audio without opus conversion", map[string]any{"error": transcodeErr.Error()})
+		}
+	}
+
+	// Return with Media containing the voice note and mark ResponseHandled so it
+	// is delivered immediately without LLM intervention. ForUser stays empty: the
+	// audio is the reply, so no duplicate text bubble is published.
 	return &ToolResult{
 		ForLLM:          "TTS audio sent",
-		ForUser:         text,
 		Media:           []string{ref},
 		ResponseHandled: true,
 	}
