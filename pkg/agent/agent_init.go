@@ -84,6 +84,7 @@ func NewAgentLoop(
 		bus:               msgBus,
 		stopCh:            make(chan struct{}),
 		cfg:               cfg,
+		voiceDefaultMode:  cfg.Voice.NormalizedDefaultMode(),
 		registry:          registry,
 		state:             stateManager,
 		fallback:          fallbackChain,

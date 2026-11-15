@@ -3,12 +3,16 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/audio/tts"
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/constants"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -17,6 +21,9 @@ func (al *AgentLoop) voiceMode(sessionKey string) string {
 		if mode, ok := value.(string); ok {
 			return mode
 		}
+	}
+	if al.voiceDefaultMode != "" {
+		return al.voiceDefaultMode
 	}
 	return "off"
 }
@@ -63,6 +70,27 @@ func (al *AgentLoop) sendVoiceResponseIfEnabled(
 	if err != nil {
 		logger.WarnCF("voice-tts", "Failed to synthesize response", map[string]any{"error": err.Error()})
 		return
+	}
+
+	// TTS providers usually return mp3, but chat apps only show a voice bubble
+	// for Ogg/Opus (Telegram SendVoice, Feishu file_type=opus). Convert when
+	// possible and fall back to the original audio when ffmpeg is unavailable.
+	if srcPath, resolveErr := al.mediaStore.Resolve(ref); resolveErr == nil {
+		if opusPath, transcodeErr := tts.TranscodeToOpus(ctx, srcPath); transcodeErr == nil {
+			mediaScope := fmt.Sprintf("voice-reply:%s:%s:%d", channel, chatID, time.Now().UnixNano())
+			if opusRef, storeErr := al.mediaStore.Store(opusPath, media.MediaMeta{
+				Filename:    filepath.Base(opusPath),
+				ContentType: "audio/ogg",
+				Source:      "tts:voice",
+			}, mediaScope); storeErr == nil {
+				ref = opusRef
+			} else {
+				_ = os.Remove(opusPath)
+				logger.WarnCF("voice-tts", "Failed to store opus voice note", map[string]any{"error": storeErr.Error()})
+			}
+		} else {
+			logger.WarnCF("voice-tts", "Sending TTS audio without opus conversion", map[string]any{"error": transcodeErr.Error()})
+		}
 	}
 
 	part := bus.MediaPart{Ref: ref}

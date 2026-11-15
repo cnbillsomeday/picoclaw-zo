@@ -58,6 +58,9 @@ type AgentLoop struct {
 	mediaStore     media.MediaStore
 	transcriber    asr.Transcriber
 	ttsProvider    tts.TTSProvider
+	// voiceDefaultMode is the fallback voice reply mode for sessions that never
+	// used /voice. Comes from voice.default_mode.
+	voiceDefaultMode string
 	cmdRegistry    *commands.Registry
 	mcp            mcpRuntime
 	plugins        pluginRuntime

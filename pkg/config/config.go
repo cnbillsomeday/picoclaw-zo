@@ -1056,6 +1056,19 @@ type VoiceConfig struct {
 	TTSModelName      string `json:"tts_model_name,omitempty"     env:"PICOCLAW_VOICE_TTS_MODEL_NAME"`
 	EchoTranscription bool   `json:"echo_transcription"           env:"PICOCLAW_VOICE_ECHO_TRANSCRIPTION"`
 	ElevenLabsAPIKey  string `json:"elevenlabs_api_key,omitempty" env:"PICOCLAW_VOICE_ELEVENLABS_API_KEY"`
+	// DefaultMode is the voice reply mode for new sessions: off, on (voice in →
+	// voice out) or tts (always voice out). Empty means off.
+	DefaultMode string `json:"default_mode,omitempty" env:"PICOCLAW_VOICE_DEFAULT_MODE"`
+}
+
+// NormalizedDefaultMode returns a valid voice mode, defaulting to off.
+func (c VoiceConfig) NormalizedDefaultMode() string {
+	switch strings.ToLower(strings.TrimSpace(c.DefaultMode)) {
+	case "on", "tts":
+		return strings.ToLower(strings.TrimSpace(c.DefaultMode))
+	default:
+		return "off"
+	}
 }
 
 type ModelStreamingConfig struct {
