@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	audioutil "github.com/sipeed/picoclaw/pkg/audio"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/isolation"
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -142,7 +143,7 @@ const audioTranscodeTimeout = 60 * time.Second
 // the only decoder available across the supported platforms. The output lives
 // in the managed media temp dir and the caller removes it.
 func transcodeAudio(ctx context.Context, src, format string) (string, error) {
-	bin, err := exec.LookPath("ffmpeg")
+	bin, err := audioutil.FFmpegPath()
 	if err != nil {
 		return "", fmt.Errorf("transcoding %q audio needs ffmpeg, which is not installed", format)
 	}

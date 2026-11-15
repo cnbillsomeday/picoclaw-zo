@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	audioutil "github.com/sipeed/picoclaw/pkg/audio"
 	"github.com/sipeed/picoclaw/pkg/isolation"
 	"github.com/sipeed/picoclaw/pkg/media"
 )
@@ -22,7 +23,7 @@ const opusTranscodeTimeout = 60 * time.Second
 // audio parts with file_type=opus. MiMo TTS only emits mp3/wav/pcm, so a
 // conversion is required for a real voice note.
 func TranscodeToOpus(ctx context.Context, src string) (string, error) {
-	bin, err := exec.LookPath("ffmpeg")
+	bin, err := audioutil.FFmpegPath()
 	if err != nil {
 		return "", fmt.Errorf("voice notes need ffmpeg, which is not installed")
 	}
