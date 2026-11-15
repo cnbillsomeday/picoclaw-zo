@@ -49,27 +49,30 @@ func (al *AgentLoop) setVoiceMode(sessionKey, mode string) error {
 	return nil
 }
 
+// sendVoiceResponseIfEnabled synthesizes the response as a voice note and sends
+// it. It returns true when a voice note was actually sent; callers use that to
+// skip the plain-text message so a voice session does not get both.
 func (al *AgentLoop) sendVoiceResponseIfEnabled(
 	ctx context.Context,
 	agent *AgentInstance,
 	opts processOptions,
 	text string,
-) {
+) bool {
 	mode := al.voiceMode(opts.Dispatch.SessionKey)
 	if mode == "off" || (mode == "on" && opts.Dispatch.InboundContext.Raw[metadataKeyInputAudio] != "true") {
-		return
+		return false
 	}
 	provider := al.currentTTSProvider()
 	if provider == nil || al.mediaStore == nil || al.bus == nil {
 		logger.WarnCF("voice-tts", "Cannot synthesize response: TTS runtime is not ready", nil)
-		return
+		return false
 	}
 
 	channel, chatID := opts.Dispatch.Channel(), opts.Dispatch.ChatID()
 	ref, err := tts.SynthesizeAndStore(ctx, provider, al.mediaStore, text, "", channel, chatID)
 	if err != nil {
 		logger.WarnCF("voice-tts", "Failed to synthesize response", map[string]any{"error": err.Error()})
-		return
+		return false
 	}
 
 	// TTS providers usually return mp3, but chat apps only show a voice bubble
@@ -120,7 +123,9 @@ func (al *AgentLoop) sendVoiceResponseIfEnabled(
 	}
 	if err != nil {
 		logger.WarnCF("voice-tts", "Failed to send synthesized response", map[string]any{"error": err.Error()})
+		return false
 	}
+	return true
 }
 
 func (al *AgentLoop) hasAudioInput(msg bus.InboundMessage) bool {

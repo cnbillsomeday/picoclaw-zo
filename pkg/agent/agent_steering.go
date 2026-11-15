@@ -56,10 +56,12 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 		finalResponse = continued
 	}
 
-	// Publish final response
+	// Publish final response. Voice mode sends a voice note instead of the text
+	// bubble; when the voice note is sent successfully the text is skipped so
+	// the user gets exactly one reply.
 	if finalResponse != "" {
-		if al.publishFinalResponse(ctx, target.Channel, target.ChatID, target.SessionKey, finalResponse) &&
-			al.voiceMode(target.SessionKey) != "off" {
+		voiceSent := false
+		if al.voiceMode(target.SessionKey) != "off" {
 			msg := bus.NormalizeInboundMessage(initialMsg)
 			if al.hasAudioInput(msg) {
 				if msg.Context.Raw == nil {
@@ -67,12 +69,15 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 				}
 				msg.Context.Raw[metadataKeyInputAudio] = "true"
 			}
-			al.sendVoiceResponseIfEnabled(ctx, al.agentForSession(target.SessionKey), processOptions{
+			voiceSent = al.sendVoiceResponseIfEnabled(ctx, al.agentForSession(target.SessionKey), processOptions{
 				Dispatch: DispatchRequest{
 					SessionKey:     target.SessionKey,
 					InboundContext: &msg.Context,
 				},
 			}, finalResponse)
+		}
+		if !voiceSent {
+			al.publishFinalResponse(ctx, target.Channel, target.ChatID, target.SessionKey, finalResponse)
 		}
 	}
 }

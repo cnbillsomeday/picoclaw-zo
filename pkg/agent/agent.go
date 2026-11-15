@@ -686,9 +686,13 @@ func (al *AgentLoop) runAgentLoop(
 			msg.Context.Raw["model_name"] = modelName
 		}
 		markFinalOutbound(&msg)
-		al.bus.PublishOutbound(ctx, msg)
+
+		voiceSent := false
 		if opts.Dispatch.InboundContext != nil {
-			al.sendVoiceResponseIfEnabled(ctx, agent, opts, result.finalContent)
+			voiceSent = al.sendVoiceResponseIfEnabled(ctx, agent, opts, result.finalContent)
+		}
+		if !voiceSent {
+			al.bus.PublishOutbound(ctx, msg)
 		}
 	}
 

@@ -71,14 +71,8 @@ func TestVoiceModeSendsAudioForFinalChatResponse(t *testing.T) {
 
 			al.runTurnWithSteering(context.Background(), msg)
 
-			select {
-			case got := <-msgBus.OutboundChan():
-				if got.Content != "spoken reply" {
-					t.Fatalf("outbound content = %q", got.Content)
-				}
-			default:
-				t.Fatal("missing final text response")
-			}
+			// In voice mode the response is sent as audio only; the plain-text
+			// outbound must be skipped so the user does not get a duplicate.
 			select {
 			case got := <-msgBus.OutboundMediaChan():
 				if !tc.wantAudio {
@@ -95,6 +89,19 @@ func TestVoiceModeSendsAudioForFinalChatResponse(t *testing.T) {
 			default:
 				if tc.wantAudio {
 					t.Fatal("missing voice response")
+				}
+			}
+			select {
+			case got := <-msgBus.OutboundChan():
+				if tc.wantAudio {
+					t.Fatalf("voice mode must not send text: %+v", got)
+				}
+				if got.Content != "spoken reply" {
+					t.Fatalf("outbound content = %q", got.Content)
+				}
+			default:
+				if !tc.wantAudio {
+					t.Fatal("missing final text response")
 				}
 			}
 		})
