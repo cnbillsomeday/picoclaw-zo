@@ -691,7 +691,9 @@ func (al *AgentLoop) runAgentLoop(
 		if opts.Dispatch.InboundContext != nil {
 			voiceSent = al.sendVoiceResponseIfEnabled(ctx, agent, opts, result.finalContent)
 		}
-		if !voiceSent {
+		// Publish the text when no voice note went out, and also when the
+		// channel is configured to send the transcript alongside the audio.
+		if !voiceSent || al.GetConfig().Voice.AlsoSendText {
 			al.bus.PublishOutbound(ctx, msg)
 		}
 	}

@@ -76,7 +76,7 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 				},
 			}, finalResponse)
 		}
-		if !voiceSent {
+		if !voiceSent || al.GetConfig().Voice.AlsoSendText {
 			al.publishFinalResponse(ctx, target.Channel, target.ChatID, target.SessionKey, finalResponse)
 		}
 	}

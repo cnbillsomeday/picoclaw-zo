@@ -1059,6 +1059,10 @@ type VoiceConfig struct {
 	// DefaultMode is the voice reply mode for new sessions: off, on (voice in →
 	// voice out) or tts (always voice out). Empty means off.
 	DefaultMode string `json:"default_mode,omitempty" env:"PICOCLAW_VOICE_DEFAULT_MODE"`
+	// AlsoSendText publishes the plain-text reply after the voice note, so the
+	// user gets the audio plus the matching transcript. Off by default: voice
+	// mode alone sends only the note.
+	AlsoSendText bool `json:"also_send_text,omitempty" env:"PICOCLAW_VOICE_ALSO_SEND_TEXT"`
 }
 
 // NormalizedDefaultMode returns a valid voice mode, defaulting to off.

@@ -127,3 +127,62 @@ func TestVoiceModeConcurrentWithProviderReload(t *testing.T) {
 	}
 	<-done
 }
+
+// When voice.also_send_text is on the user gets both the voice note and the
+// matching transcript; voice mode alone (default) sends only the note.
+func TestVoiceModeAlsoSendText(t *testing.T) {
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{Defaults: config.AgentDefaults{
+			Workspace: t.TempDir(), ModelName: "test-model", MaxTokens: 4096, MaxToolIterations: 10,
+		}},
+		Voice: config.VoiceConfig{AlsoSendText: true},
+	}
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(cfg, msgBus, &simpleMockProvider{response: "spoken reply"})
+	store := media.NewFileMediaStore()
+	al.SetMediaStore(store)
+	al.mu.Lock()
+	al.ttsProvider = voiceTestTTSProvider{}
+	al.mu.Unlock()
+
+	msg := testInboundMessage(bus.InboundMessage{
+		Channel: "telegram", ChatID: "chat-1", SenderID: "user-1", Content: "hello",
+	})
+	path := filepath.Join(t.TempDir(), "voice.ogg")
+	if err := os.WriteFile(path, []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := store.Store(path, media.MediaMeta{Filename: "voice.ogg", ContentType: "audio/ogg"}, "incoming")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg.Media = []string{ref}
+
+	route, _, err := al.resolveMessageRoute(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionKey := resolveScopeKey(al.allocateRouteSession(route, msg).SessionKey, msg.SessionKey)
+	if err := al.setVoiceMode(sessionKey, "on"); err != nil {
+		t.Fatal(err)
+	}
+
+	al.runTurnWithSteering(context.Background(), msg)
+
+	select {
+	case got := <-msgBus.OutboundMediaChan():
+		if len(got.Parts) != 1 {
+			t.Fatalf("voice parts = %d", len(got.Parts))
+		}
+	default:
+		t.Fatal("missing voice response")
+	}
+	select {
+	case got := <-msgBus.OutboundChan():
+		if got.Content != "spoken reply" {
+			t.Fatalf("text content = %q", got.Content)
+		}
+	default:
+		t.Fatal("missing transcript text alongside the voice note")
+	}
+}
