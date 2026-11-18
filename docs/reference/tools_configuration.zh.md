@@ -35,7 +35,9 @@ PicoClaw 的工具配置位于 `config.json` 的 `tools` 字段中。
 
 ## 敏感数据过滤
 
-在将工具结果发送给 LLM 之前，PicoClaw 可以从输出中过滤敏感值（API 密钥、令牌、密码）。这可以防止 LLM 看到自己的凭据。
+在将工具结果发送给 LLM 之前，PicoClaw 可以从输出中脱敏精确匹配的敏感值（API 密钥、令牌、密码）。这只是纵深防御，不是数据防泄漏（DLP）边界。
+
+> **纵深防御，而非 DLP 保证。** 只有精确配置的值会被替换。Base64、十六进制、字符间空格、反转、压缩、分块或由模型重建的形式都会绕过过滤器。它也不覆盖磁盘产物、日志、频道消息或模型最终回答。不要依赖它阻止凭据外泄。
 
 详细说明请参阅[敏感数据过滤](../security/sensitive_data_filtering.zh.md)。
 
@@ -56,7 +58,7 @@ PicoClaw 的工具配置位于 `config.json` 的 `tools` 字段中。
 
 截断与转存是两个不同的环节。部分工具会在进入上述转存层之前先限制自身的原始输出：`exec` 对超过 `tools.exec.max_output_chars`（默认 `50000`）的前台输出保留前 40% 与后 60%，并以 `[OUTPUT TRUNCATED - N chars omitted out of T total]` 提示分隔；行模式的 `read_file` 会把 `max_lines` 请求钳制到 `tools.read_file.max_lines`，并将超过 `tools.read_file.max_line_length` 的行截断为 ` ... [truncated]` 标记；MCP 文本结果在超过 `tools.mcp.max_inline_text_chars` 时对脱敏文本保留前 40% 与后 60%，并以 `[MCP RESULT TRUNCATED - N chars omitted out of T total]` 提示分隔，完整原文仍写入自身的 `.artifacts/mcp` 产物。
 
-当工具自行截断输出时（`exec`、`web_fetch`，以及自身产物写入失败的 MCP 文本结果），转存保存的是**截断前的原文**而非截断视图，内联预览显示完整输出的真实开头与结尾——被省略的中间部分仍可从产物中读取。未超过 `max_inline_result_chars` 的结果不会被转存，因此刻意设置的小上限（例如较小的 `maxChars`）仍保留工具自身的截断视图。
+当工具自行截断输出时（`exec`、`web_fetch`，以及自身产物写入失败的 MCP 文本结果），转存保存的是**截断前的原文**而非截断视图，内联预览显示完整输出的真实开头与结尾——被省略的中间部分仍可从产物中读取。未超过 `max_inline_result_chars` 的结果通常不会被转存。`web_fetch` 将 `maxChars` 默认设为同一预算，且按调用只能调低；当较小的值截断预览时，完整页面**即使未超过内联预算也会被转存**，服务端上限为 `2,000,000` 个字符，并在结果前置一条指向产物的警告。若页面超过该上限，产物保留头尾窗口并附带 `[ARTIFACT TRUNCATED - N chars omitted out of T total]` 提示，警告会指向结构化端点或更窄的来源。
 
 > **安全提示 —— 产物未经过滤。** 产物文件在工具结果规范化阶段写入，该阶段**早于** `filter_sensitive_data` 的应用。过滤器只对随后注入模型上下文的内容进行脱敏，因此磁盘上的产物保留了**未过滤**的原始输出（MCP 大文本产物一直如此，现在适用于所有工具）。例如，一个很大的 `exec` 结果即使启用了过滤，也可能把明文凭据写入工作区。目录（`0700`）与文件（`0600`）权限受限，但内容未脱敏，且产物路径会暴露给模型——模型可以读取它，或用 `send_file` 转发原始文件。请将工作区产物视为敏感数据。详见[敏感数据过滤](../security/sensitive_data_filtering.zh.md#大型工具结果产物)。
 
@@ -170,8 +172,8 @@ Exec 工具用于执行 shell 命令。
 | 配置项                 | 类型  | 默认值 | 描述                           |
 |------------------------|-------|--------|--------------------------------|
 | `enabled`              | bool  | true   | 启用 exec 工具                 |
-| `enable_deny_patterns` | bool  | true   | 启用默认的危险命令拦截         |
-| `custom_deny_patterns` | array | []     | 自定义拒绝模式（正则表达式）   |
+| `enable_deny_patterns` | bool  | true   | 启用内置危险命令拦截         |
+| `custom_deny_patterns` | array | []     | 自定义拒绝模式（正则表达式），始终生效 |
 
 ### 禁用 Exec 工具
 
@@ -197,12 +199,22 @@ PICOCLAW_TOOLS_EXEC_ENABLED=false
 
 ### 功能说明
 
-- **`enable_deny_patterns`**：设为 `false` 可完全禁用默认的危险命令拦截模式
-- **`custom_deny_patterns`**：添加自定义拒绝正则模式；匹配的命令将被拦截
+- **`enable_deny_patterns`**：设为 `false` 可禁用内置的默认危险命令拦截模式；硬性底线规则和 `custom_deny_patterns` 仍然生效
+- **`custom_deny_patterns`**：添加自定义拒绝正则模式；即使关闭内置拦截也始终生效，且不会被自定义允许规则豁免
+
+### 始终生效的硬性底线规则
+
+以下灾难性命令属于不可关闭的底线规则：即使 `enable_deny_patterns` 设为 `false`，它们仍会被拦截，且自定义允许规则无法豁免：
+
+- Fork 炸弹：`:(){ :|:& };:`
+- 磁盘格式化/分区：`mkfs`、`mkfs.*`、`diskpart`、`format C:`
+- 原始磁盘访问：`dd if=`、写入 `/dev/sd*` 等块设备
+- 递归删除根目录：`rm -rf /`、`rm -rf /*`
+- 电源状态变更：`shutdown`、`reboot`、`poweroff`
 
 ### 默认拦截的命令模式
 
-默认情况下，PicoClaw 会拦截以下危险命令：
+这些模式默认启用，可通过 `enable_deny_patterns: false` 关闭：
 
 - 删除命令：`rm -rf`、`del /f/q`、`rmdir /s`
 - 磁盘操作：`format`、`mkfs`、`diskpart`、`dd if=`、写入 `/dev/sd*`

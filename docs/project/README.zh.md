@@ -13,14 +13,14 @@ description: "PicoClaw 中文项目说明：超轻量 Go 个人 AI 助手，可�
 _刻意保持小巧。小巧不等于简陋。小巧，已然足够。_
 
 <p>
-  <img src="https://img.shields.io/badge/Go-1.27.3+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go 1.27.3+">
+  <img src="https://img.shields.io/badge/Go-1.27.4+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go 1.27.4+">
   <img src="https://img.shields.io/badge/Platforms-x86__64%20%7C%20ARM64%20%7C%20MIPS%20%7C%20RISC--V%20%7C%20LoongArch-blue" alt="支持的平台">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT 许可证">
   <img src="https://img.shields.io/github/v/release/afjcjsbx/picoclaw?style=flat&label=release" alt="最新版本">
   <img src="https://img.shields.io/github/stars/afjcjsbx/picoclaw?style=flat&label=stars" alt="GitHub Stars">
   <br>
   <a href="https://afjcjsbx.github.io/picoclaw/"><img src="https://img.shields.io/badge/Docs-Read-007acc?style=flat&logo=read-the-docs&logoColor=white" alt="文档"></a>
-  <a href="https://discord.gg/bEuEDnKpf"><img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://discord.gg/XTt5Y6cJfY"><img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="https://deepwiki.com/afjcjsbx/picoclaw"><img src="https://img.shields.io/badge/Wiki-DeepWiki-FFA500?style=flat&logo=wikipedia&logoColor=white" alt="DeepWiki"></a>
 </p>
 
@@ -34,7 +34,7 @@ _刻意保持小巧。小巧不等于简陋。小巧，已然足够。_
 ---
 
 <p align="center">
-  <a href="https://discord.gg/bEuEDnKpf">
+  <a href="https://discord.gg/XTt5Y6cJfY">
     <img src="https://raw.githubusercontent.com/afjcjsbx/picoclaw/main/assets/discord-banner.png" alt="PicoClaw Discord —— 结识开发者、分享想法、获取帮助" width="80%">
   </a>
 </p>
@@ -123,7 +123,7 @@ irm https://raw.githubusercontent.com/afjcjsbx/picoclaw/main/scripts/install.ps1
 
 前置要求：
 
-- Go 1.27.3+
+- Go 1.27.4+
 - Node.js 22+ 和 pnpm 10.33.0+（用于构建 Web UI 和启动器）
 
 ```bash
@@ -491,6 +491,7 @@ picoclaw mcp test browserbase
 | `picoclaw agent`          | 交互式对话模式                       |
 | `picoclaw gateway`        | 启动网关                             |
 | `picoclaw status`         | 查看状态                             |
+| `picoclaw usage`          | 查看各会话的 token 用量与费用        |
 | `picoclaw version`        | 查看版本信息                         |
 | `picoclaw model`          | 查看或切换默认模型                   |
 | `picoclaw mcp list`       | 列出已配置的 MCP 服务器              |
@@ -548,4 +549,4 @@ PicoClaw 通过 `cron` 工具支持定时提醒和重复任务：
 
 **PicoClaw 在开放中构建。来和我们一起构建它吧。**
 
-[⭐ 给 PicoClaw 点星](https://github.com/afjcjsbx/picoclaw) · [💬 加入 Discord](https://discord.gg/bEuEDnKpf) · [🐛 报告问题](https://github.com/afjcjsbx/picoclaw/issues)
+[⭐ 给 PicoClaw 点星](https://github.com/afjcjsbx/picoclaw) · [💬 加入 Discord](https://discord.gg/XTt5Y6cJfY) · [🐛 报告问题](https://github.com/afjcjsbx/picoclaw/issues)

@@ -27,6 +27,11 @@ Instead of loading all tools, the LLM is provided with a lightweight search tool
 When the LLM needs a specific capability, it searches the hidden library. Matching tools are then temporarily "unlocked"
 and injected into the context for a configured number of turns (`ttl`).
 
+BM25 matching normalizes common English inflections (plurals, `-ing`, `-ed`) so a query such as
+`searching repositories` matches `search repositories`. Tokens containing digits or non-ASCII characters are left unchanged.
+Common English function words (`a`, `the`, `of`, `to`, `is`, ...) are ignored in both the tool index and the query, so a
+sentence such as `how can I create an issue` is matched on `create` and `issue` only.
+
 ## Global Config
 
 | Config                 | Type   | Default | Description                                  |
@@ -63,6 +68,7 @@ Oversized MCP text results are bounded, not dropped: the model keeps the first 4
 | `env`      | object  | no       | Environment variables for stdio process                                                                                                                         |
 | `env_file` | string  | no       | Path to environment file for stdio process                                                                                                                      |
 | `inherit_env` | bool | no | Pass the full PicoClaw process environment to this stdio server. Defaults to `false`. |
+| `supports_parallel_tool_calls` | bool | no | Allow this server's tool calls to run concurrently when the model emits several in one response (up to `agents.defaults.max_parallel_tool_calls`). Defaults to `false`: calls run one by one. Per server, not global. |
 | `url`      | string  | sse/http | Endpoint URL for `sse`/`http` transport                                                                                                                         |
 | `headers`  | object  | no       | HTTP headers for `sse`/`http` transport                                                                                                                         |
 | `oauth`    | object  | no       | Browser OAuth for remote servers; run `picoclaw mcp login <name>` before connecting. Cannot be combined with an `Authorization` header.                         |

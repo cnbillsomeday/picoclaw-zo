@@ -686,8 +686,12 @@ func main() {
 	// Apply middleware stack
 	handler := middleware.Recoverer(
 		middleware.Logger(
-			middleware.ReferrerPolicyNoReferrer(
-				middleware.JSONContentType(dashAuth),
+			middleware.SecurityHeaders(
+				middleware.ReferrerPolicyNoReferrer(
+					middleware.CSRF(
+						middleware.JSONContentType(dashAuth),
+					),
+				),
 			),
 		),
 	)

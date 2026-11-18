@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"strings"
@@ -30,8 +31,10 @@ import (
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/plugin"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/skills"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/status"
+	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/usage"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/version"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/memlimit"
 	"github.com/sipeed/picoclaw/pkg/updater"
 )
@@ -137,6 +140,7 @@ picoclaw --no-color status`,
 		auth.NewAuthCommand(),
 		gateway.NewGatewayCommand(),
 		status.NewStatusCommand(),
+		usage.NewUsageCommand(),
 		cron.NewCronCommand(),
 		fish.NewFishCommand(),
 		mcp.NewMCPCommand(),
@@ -183,6 +187,26 @@ const (
 		"\r\n"
 )
 
+// machineOutputFlag is the flag that makes a command write machine-readable output.
+const machineOutputFlag = "json"
+
+// machineOutputRequested reports whether the command selected by args writes
+// machine-readable output. The flags are parsed by cobra, so the answer matches
+// what the command sees: `--json=1` counts, and a value that only looks like
+// the flag, as in `usage -s --json`, does not. The probe builds its own command
+// tree, so the command that runs keeps unparsed flags.
+func machineOutputRequested(args []string) bool {
+	cmd, rest, err := NewPicoclawCommand().Find(args)
+	if err != nil || cmd.Flags().Lookup(machineOutputFlag) == nil {
+		return false
+	}
+	if cmd.ParseFlags(rest) != nil {
+		return false
+	}
+	enabled, err := cmd.Flags().GetBool(machineOutputFlag)
+	return err == nil && enabled
+}
+
 func main() {
 	// Initialize Termux SSL certificate detection before anything else
 	initTermuxSSL()
@@ -192,34 +216,31 @@ func main() {
 
 	cliui.Init(earlyColorDisabled())
 
-	// `picoclaw fish hook` 走 JSON-RPC over stdio，stdout 只能是协议本身：
-	// 横幅和时区提示会把宿主的第一帧读坏，必须在这里就让路。
-	stdio := stdioProtocolMode(os.Args[1:])
+	diag := io.Writer(os.Stdout)
+	if machineOutputRequested(os.Args[1:]) || stdioProtocolMode(os.Args[1:]) {
+		// `picoclaw fish hook` 走 JSON-RPC over stdio，stdout 只能是协议本身：
+		// 横幅和时区提示会把宿主的第一帧读坏，必须在这里就让路。上游的
+		// --machine-output 也走同一路径：banner 静默、日志转 stderr。
+		diag = io.Discard
+		logger.RedirectConsole(os.Stderr)
+	}
 
-	if !stdio {
-		if earlyColorDisabled() {
-			fmt.Print(plainBanner)
-		} else {
-			fmt.Printf("%s", banner)
-		}
+	if earlyColorDisabled() {
+		fmt.Fprint(diag, plainBanner)
+	} else {
+		fmt.Fprintf(diag, "%s", banner)
 	}
 
 	tzEnv := os.Getenv("TZ")
 	if tzEnv != "" {
-		if !stdio {
-			fmt.Println("TZ environment:", tzEnv)
-			zoneinfoEnv := os.Getenv("ZONEINFO")
-			fmt.Println("ZONEINFO environment:", zoneinfoEnv)
-		}
+		fmt.Fprintln(diag, "TZ environment:", tzEnv)
+		zoneinfoEnv := os.Getenv("ZONEINFO")
+		fmt.Fprintln(diag, "ZONEINFO environment:", zoneinfoEnv)
 		loc, err := time.LoadLocation(tzEnv)
 		if err != nil {
-			if !stdio {
-				fmt.Println("Error loading time zone:", err)
-			}
+			fmt.Fprintln(diag, "Error loading time zone:", err)
 		} else {
-			if !stdio {
-				fmt.Println("Time zone loaded successfully:", loc)
-			}
+			fmt.Fprintln(diag, "Time zone loaded successfully:", loc)
 			time.Local = loc //nolint:gosmopolitan // We intentionally set local timezone from TZ env
 		}
 	}

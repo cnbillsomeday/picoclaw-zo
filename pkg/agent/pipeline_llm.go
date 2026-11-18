@@ -287,6 +287,11 @@ func (p *Pipeline) CallLLM(
 			applyThinkingOption(callOpts, candidateProvider, candidateThinking, true, ts.agent.ID)
 			exec.suppressReasoning = shouldSuppressReasoningFor(candidateThinking)
 
+			if d := ts.implicitCallTimeout(candidateCfg); d > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, d)
+				defer cancel()
+			}
 			resp, err := candidateProvider.Chat(
 				ctx, messagesForCall, candidateTools, candidate.Model, callOpts,
 			)
@@ -493,7 +498,7 @@ func (p *Pipeline) CallLLM(
 				if compactErr := p.ContextManager.Compact(ctx, &CompactRequest{
 					SessionKey:         ts.sessionKey,
 					Reason:             ContextCompressReasonRetry,
-					Budget:             ts.agent.ContextWindow,
+					Budget:             usableContextTokens(ts.agent),
 					ActiveTurnMessages: activeTurnMessageCount(ts, exec),
 				}); compactErr != nil {
 					logger.WarnCF("agent", "Context overflow compact failed", map[string]any{
@@ -653,7 +658,7 @@ func (p *Pipeline) CallLLM(
 	// what the streaming publisher reads via GetTurnUsage at finalize.
 	if ts != nil {
 		ts.SetLastFinishReason(exec.response.FinishReason)
-		ts.AddUsage(exec.response.Usage)
+		ts.AddUsage(exec.llmModelName, exec.response.Usage)
 	}
 
 	// Mid-turn routing guard: a light-model turn that grows too large or keeps
@@ -745,9 +750,10 @@ func (p *Pipeline) CallLLM(
 			exec.pendingMessages = append(exec.pendingMessages, steerMsgs...)
 			return ControlContinue, nil
 		}
-		// A SubTurn may not finish before its async children: let the model
-		// react to their results instead of orphaning them.
-		if ts.parentTurnState != nil && !exec.gracefulTerminal {
+		// A SubTurn (and a CLI root turn) may not finish before its async
+		// children: let the model react to their results instead of orphaning
+		// them.
+		if (ts.parentTurnState != nil || ts.joinSubTurns) && !exec.gracefulTerminal {
 			if msgs := ts.joinChildren(turnCtx, al.cfg.FilterSensitiveData); len(msgs) > 0 {
 				cancelConfiguredStreamingLLM(turnCtx, exec)
 				logger.InfoCF("agent", "Joined async children after direct LLM response; continuing turn",

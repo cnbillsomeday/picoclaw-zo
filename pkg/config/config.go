@@ -611,6 +611,14 @@ const (
 	DefaultLoopDetectionRepeatThreshold   = 3
 	DefaultLoopDetectionCriticalThreshold = 6
 	DefaultLoopDetectionWindowSize        = 20
+
+	// DefaultMaxToolBudgetWarningRatio is the share of max_tool_iterations after
+	// which the model gets a one-time checkpoint notice.
+	DefaultMaxToolBudgetWarningRatio = 0.75
+
+	// DefaultRunBudgetWarningThreshold is the share of run_budget_seconds after
+	// which the model gets a one-time wrap-up notice.
+	DefaultRunBudgetWarningThreshold = 0.8
 )
 
 // LoopDetectionConfig controls detection of consecutive identical tool calls.
@@ -620,6 +628,29 @@ type LoopDetectionConfig struct {
 	RepeatThreshold   int  `json:"repeat_threshold"   env:"PICOCLAW_AGENTS_DEFAULTS_LOOP_DETECTION_REPEAT_THRESHOLD"`
 	CriticalThreshold int  `json:"critical_threshold" env:"PICOCLAW_AGENTS_DEFAULTS_LOOP_DETECTION_CRITICAL_THRESHOLD"`
 	WindowSize        int  `json:"window_size"        env:"PICOCLAW_AGENTS_DEFAULTS_LOOP_DETECTION_WINDOW_SIZE"`
+}
+
+// ValidateBudgetWarningRatio checks the budget warning ratios
+// (agents.defaults.max_tool_budget_warning_ratio and
+// agents.defaults.run_budget_warning_threshold). Zero means unset (the default
+// applies); anything else must lie strictly between 0 and 1.
+func (c *Config) ValidateBudgetWarningRatio() error {
+	if c == nil {
+		return nil
+	}
+	d := &c.Agents.Defaults
+	for _, f := range []struct {
+		name string
+		r    float64
+	}{
+		{"max_tool_budget_warning_ratio", d.MaxToolBudgetWarningRatio},
+		{"run_budget_warning_threshold", d.RunBudgetWarningThreshold},
+	} {
+		if f.r != 0 && !(f.r > 0 && f.r < 1) { // also rejects NaN
+			return fmt.Errorf("agents.defaults.%s %v must be strictly between 0 and 1", f.name, f.r)
+		}
+	}
+	return nil
 }
 
 // Normalized returns a safe, internally consistent loop-detection config.
@@ -657,6 +688,9 @@ type AgentDefaults struct {
 	ContextWindow             int                 `json:"context_window,omitempty"             env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_WINDOW"`
 	Temperature               *float64            `json:"temperature,omitempty"                env:"PICOCLAW_AGENTS_DEFAULTS_TEMPERATURE"`
 	MaxToolIterations         int                 `json:"max_tool_iterations"                  env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"`
+	MaxToolBudgetWarningRatio float64             `json:"max_tool_budget_warning_ratio"        env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOOL_BUDGET_WARNING_RATIO"`
+	RunBudgetSeconds          int                 `json:"run_budget_seconds"                   env:"PICOCLAW_AGENTS_DEFAULTS_RUN_BUDGET_SECONDS"`
+	RunBudgetWarningThreshold float64             `json:"run_budget_warning_threshold"         env:"PICOCLAW_AGENTS_DEFAULTS_RUN_BUDGET_WARNING_THRESHOLD"`
 	SummarizeMessageThreshold int                 `json:"summarize_message_threshold"          env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_MESSAGE_THRESHOLD"` // Deprecated: ignored; summarization is driven by SummarizeTokenPercent
 	SummarizeTokenPercent     int                 `json:"summarize_token_percent"              env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_TOKEN_PERCENT"`
 	MaxMediaSize              int                 `json:"max_media_size,omitempty"             env:"PICOCLAW_AGENTS_DEFAULTS_MAX_MEDIA_SIZE"`
@@ -666,7 +700,7 @@ type AgentDefaults struct {
 	SteeringMode              string              `json:"steering_mode,omitempty"              env:"PICOCLAW_AGENTS_DEFAULTS_STEERING_MODE"`           // "one-at-a-time" (default) or "all"
 	MaxParallelTurns          int                 `json:"max_parallel_turns,omitempty"         env:"PICOCLAW_AGENTS_DEFAULTS_MAX_PARALLEL_TURNS"`      // Max concurrent turns (0 or 1 = sequential)
 	MaxParallelToolCalls      int                 `json:"max_parallel_tool_calls,omitempty"    env:"PICOCLAW_AGENTS_DEFAULTS_MAX_PARALLEL_TOOL_CALLS"` // Max concurrent tool calls of one LLM response (0 or 1 = sequential)
-	SubTurn                   SubTurnConfig       `json:"subturn"                                                                                          envPrefix:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_"`
+	SubTurn                   SubTurnConfig       `json:"subturn"                                                                                           envPrefix:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_"`
 	ToolFeedback              ToolFeedbackConfig  `json:"tool_feedback,omitempty"`
 	LoopDetection             LoopDetectionConfig `json:"loop_detection,omitempty"`
 	SplitOnMarker             bool                `json:"split_on_marker"                      env:"PICOCLAW_AGENTS_DEFAULTS_SPLIT_ON_MARKER"` // split messages on <|[SPLIT]|> marker
@@ -994,6 +1028,10 @@ type MQTTSettings struct {
 	ClientID    string       `json:"client_id,omitempty"    yaml:"-"                  env:"PICOCLAW_CHANNELS_MQTT_CLIENT_ID"`
 	KeepAlive   int          `json:"keep_alive,omitempty"   yaml:"-"                  env:"PICOCLAW_CHANNELS_MQTT_KEEP_ALIVE"`
 	QoS         int          `json:"qos,omitempty"          yaml:"-"                  env:"PICOCLAW_CHANNELS_MQTT_QOS"`
+	// TLSInsecureSkipVerify disables TLS certificate verification when
+	// connecting to the broker. Only enable for brokers with self-signed
+	// certificates on trusted networks.
+	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty" yaml:"-" env:"PICOCLAW_CHANNELS_MQTT_TLS_INSECURE_SKIP_VERIFY"`
 }
 
 // SlackWebhookSettings configures the output-only Slack webhook channel.
@@ -1135,6 +1173,9 @@ type ModelConfig struct {
 	// isVirtual marks this model as a virtual model generated from multi-key expansion.
 	// Virtual models should not be persisted to config files.
 	isVirtual bool
+	// generatedFallbacks lists the virtual model names that multi-key expansion
+	// prepended to Fallbacks. They are dropped again when the config is saved.
+	generatedFallbacks []string
 }
 
 // APIKey returns the first API key from apiKeys
@@ -1148,6 +1189,21 @@ func (c *ModelConfig) APIKey() string {
 // IsVirtual returns true if this model was generated from multi-key expansion.
 func (c *ModelConfig) IsVirtual() bool {
 	return c.isVirtual
+}
+
+// forPersistence returns the entry as it should be written to the config
+// files: without the fallbacks generated by multi-key expansion. The receiver
+// is not modified.
+func (c *ModelConfig) forPersistence() *ModelConfig {
+	if len(c.generatedFallbacks) == 0 {
+		return c
+	}
+	persisted := *c
+	persisted.Fallbacks = slices.DeleteFunc(slices.Clone(c.Fallbacks), func(name string) bool {
+		return slices.Contains(c.generatedFallbacks, name)
+	})
+	persisted.generatedFallbacks = nil
+	return &persisted
 }
 
 // Validate checks if the ModelConfig has all required fields.
@@ -1442,6 +1498,10 @@ type CronToolsConfig struct {
 	CommandAllowedRemotes []string `json:"command_allowed_remotes" env:"PICOCLAW_TOOLS_CRON_COMMAND_ALLOWED_REMOTES"`
 }
 
+// ExecConfig configures shell command execution.
+//
+// EnableDenyPatterns only disables the optional built-in default deny set;
+// hardline patterns and CustomDenyPatterns still apply when it is false.
 type ExecConfig struct {
 	ToolConfig          `         envPrefix:"PICOCLAW_TOOLS_EXEC_"`
 	EnableDenyPatterns  bool     `                                 json:"enable_deny_patterns"  env:"PICOCLAW_TOOLS_EXEC_ENABLE_DENY_PATTERNS"`
@@ -1516,6 +1576,9 @@ type ImageGenerateToolConfig struct {
 }
 
 const (
+	// ReadFileModeAuto returns line-numbered output for text files and falls
+	// back to raw byte output for binary files.
+	ReadFileModeAuto  = "auto"
 	ReadFileModeBytes = "bytes"
 	ReadFileModeLines = "lines"
 )
@@ -1524,10 +1587,12 @@ func (c ReadFileToolConfig) EffectiveMode() string {
 	switch strings.ToLower(strings.TrimSpace(c.Mode)) {
 	case ReadFileModeLines:
 		return ReadFileModeLines
-	case "", ReadFileModeBytes:
+	case ReadFileModeBytes:
 		return ReadFileModeBytes
+	case "", ReadFileModeAuto:
+		return ReadFileModeAuto
 	default:
-		return ReadFileModeBytes
+		return ReadFileModeAuto
 	}
 }
 
@@ -1571,6 +1636,7 @@ type ToolsConfig struct {
 	ListDir             ToolConfig              `json:"list_dir"               yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_LIST_DIR_"`
 	LoadImage           ToolConfig              `json:"load_image"             yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_LOAD_IMAGE_"`
 	Message             MessageToolsConfig      `json:"message"                yaml:"-"`
+	Reaction            ToolConfig              `json:"reaction"               yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_REACTION_"`
 	ReadFile            ReadFileToolConfig      `json:"read_file"              yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_READ_FILE_"`
 	SearchFiles         ToolConfig              `json:"search_files"           yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_SEARCH_FILES_"`
 	Serial              ToolConfig              `json:"serial"                 yaml:"-"                                                            envPrefix:"PICOCLAW_TOOLS_SERIAL_"`
@@ -1759,6 +1825,10 @@ type MCPServerConfig struct {
 	Headers map[string]string `json:"headers,omitempty"`
 	// OAuth opts into browser login and persisted credentials.
 	OAuth *MCPOAuthConfig `json:"oauth,omitempty"`
+	// SupportsParallelToolCalls lets calls to this server's tools run
+	// concurrently when the model emits several in one response. Off by default:
+	// the server must tolerate overlapping requests.
+	SupportsParallelToolCalls bool `json:"supports_parallel_tool_calls,omitempty"`
 }
 
 // MCPConfig defines configuration for all MCP servers
@@ -2020,6 +2090,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err = cfg.ValidateTurnProfile(); err != nil {
 		return nil, err
 	}
+	if err = cfg.ValidateBudgetWarningRatio(); err != nil {
+		return nil, err
+	}
 	cfg.Gateway.Host, err = resolveGatewayHostFromEnv(gatewayHostBeforeEnv)
 	if err != nil {
 		return nil, fmt.Errorf("invalid gateway host: %w", err)
@@ -2175,11 +2248,12 @@ func SaveConfig(path string, cfg *Config) error {
 	if cfg.Version < CurrentVersion {
 		cfg.Version = CurrentVersion
 	}
-	// Filter out virtual models before serializing to config file
+	// Filter out virtual models and the fallbacks generated for them before
+	// serializing to config file
 	nonVirtualModels := make([]*ModelConfig, 0, len(cfg.ModelList))
 	for _, m := range cfg.ModelList {
 		if !m.isVirtual {
-			nonVirtualModels = append(nonVirtualModels, m)
+			nonVirtualModels = append(nonVirtualModels, m.forPersistence())
 		}
 	}
 	// Temporarily replace ModelList with filtered version for serialization
@@ -2317,7 +2391,9 @@ func expandMultiKeyModels(models []*ModelConfig) []*ModelConfig {
 			fallbackNames = append(fallbackNames, expandedName)
 		}
 
-		// Create the primary entry with first key and fallbacks
+		// Create the primary entry with fallbacks. It keeps the original
+		// APIKeys (APIKey() still returns the first one) so that SaveConfig
+		// persists every key, including enc:// and file:// references.
 		primaryEntry := &ModelConfig{
 			ModelName:           originalName,
 			Provider:            m.Provider,
@@ -2338,12 +2414,14 @@ func expandMultiKeyModels(models []*ModelConfig) []*ModelConfig {
 			CustomHeaders:       m.CustomHeaders,
 			UserAgent:           m.UserAgent,
 			SessionHeader:       m.SessionHeader,
-			APIKeys:             SimpleSecureStrings(keys[0]),
+			APIKeys:             m.APIKeys,
+			Enabled:             m.Enabled,
 		}
 
 		// Prepend new fallbacks to existing ones
 		if len(fallbackNames) > 0 {
-			primaryEntry.Fallbacks = append(fallbackNames, m.Fallbacks...)
+			primaryEntry.Fallbacks = append(slices.Clone(fallbackNames), m.Fallbacks...)
+			primaryEntry.generatedFallbacks = fallbackNames
 		} else if len(m.Fallbacks) > 0 {
 			primaryEntry.Fallbacks = m.Fallbacks
 		}
@@ -2386,6 +2464,8 @@ func (t *ToolsConfig) IsToolEnabled(name string) bool {
 		return t.LoadImage.Enabled
 	case "message":
 		return t.Message.Enabled
+	case "reaction":
+		return t.Reaction.Enabled
 	case "read_file":
 		return t.ReadFile.Enabled
 	case "search_files":
